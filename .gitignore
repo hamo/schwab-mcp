@@ -1,0 +1,21 @@
+node_modules/
+.wrangler/
+dist/
+coverage/
+*.log
+
+# Never commit credentials, tokens, or local deployment configuration.
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.env
+.env.*
+!.env.example
+
+# Generated supply-chain artifacts.
+sbom.cdx.json
+
+# Editor and OS files.
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,15 @@
+# Copy to .dev.vars for local development. Never commit .dev.vars.
+OWNER_EMAIL=you@example.com
+ACCESS_TEAM_DOMAIN=your-team.cloudflareaccess.com
+ACCESS_CLIENT_ID=replace-with-your-access-oidc-client-id
+ACCESS_CLIENT_SECRET=replace-with-your-access-oidc-client-secret
+SCHWAB_CLIENT_ID=replace-with-your-schwab-app-key
+SCHWAB_CLIENT_SECRET=replace-with-your-schwab-app-secret
+TOKEN_ENCRYPTION_KEY=replace-with-base64-encoded-32-random-bytes
+STATE_SIGNING_KEY=replace-with-a-long-random-secret
+
+# Safe deployment default. The other valid values are preview and live.
+TRADING_MODE=disabled
+
+# Optional: comma-separated SHA-256 fingerprints of allowed account hashes.
+OWNER_ACCOUNT_FINGERPRINTS=

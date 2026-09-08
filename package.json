@@ -1,0 +1,39 @@
+{
+  "name": "schwab-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A security-focused, self-hosted Schwab MCP server for Cloudflare Workers.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit",
+    "check": "npm run format:check && npm run lint && npm run test && npm run build",
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "sbom": "npm sbom --sbom-format cyclonedx > sbom.cdx.json",
+    "supply-chain": "npm audit --omit=dev --audit-level=high && npm audit signatures",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "0.10.3",
+    "@modelcontextprotocol/server": "2.0.0",
+    "agents": "0.22.0",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260908.1",
+    "eslint": "10.0.0",
+    "prettier": "3.9.6",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.70.0",
+    "vitest": "4.1.11",
+    "wrangler": "4.129.1"
+  }
+}

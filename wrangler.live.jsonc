@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "schwab-mcp-live",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  "workers_dev": true,
+  "vars": {
+    "MCP_RESOURCE_URL": "https://REPLACE_WITH_LIVE_WORKER_HOSTNAME/mcp",
+    "TRADING_MODE": "live",
+    "SCHWAB_ENVIRONMENT": "production",
+  },
+  "kv_namespaces": [
+    {
+      "binding": "OAUTH_KV",
+      "id": "REPLACE_WITH_LIVE_KV_NAMESPACE_ID",
+    },
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "TOKEN_VAULT", "class_name": "SchwabTokenVault" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SchwabTokenVault"] }],
+}

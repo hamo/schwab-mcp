@@ -1,0 +1,35 @@
+# Security policy
+
+## Reporting a vulnerability
+
+Please use GitHub's private vulnerability reporting for this repository. Do not open a public issue containing credentials, tokens, account identifiers, Worker URLs tied to a private deployment, or exploit details.
+
+## Secret handling
+
+Never commit any of the following:
+
+- Schwab app keys, secrets, authorization codes, access tokens, or refresh tokens
+- Cloudflare API tokens or Access OIDC secrets
+- owner email or account fingerprints for a real deployment
+- `TOKEN_ENCRYPTION_KEY` or `STATE_SIGNING_KEY`
+- `.dev.vars`, `.env`, logs, storage exports, or screenshots containing the above
+
+If a secret reaches Git history, revoke or rotate it immediately. Removing the text in a later commit is not sufficient.
+
+## Trust boundaries
+
+The deployment depends on the security of the owner's email identity provider, Cloudflare account, Schwab account, ChatGPT account, local browser, and deployment secrets. Public source code is not treated as a security boundary.
+
+The OAuth state is HMAC-signed and expires after ten minutes. Cloudflare Access ID tokens are accepted only after signature and claim validation and an exact owner-email comparison. Schwab tokens are encrypted at rest with a deployment-specific key. The Durable Object is reachable only through an internal binding.
+
+## Trading
+
+`TRADING_MODE=disabled` is the safe default and omits Schwab write tools from MCP discovery. `preview` exposes preparation only. `live` requires a separate, expiring browser approval for the exact action digest before execution.
+
+Approval prevents an MCP client from silently executing a newly prepared action, but it does not verify that an order is financially suitable. A network interruption during order submission can leave the outcome uncertain. Inspect Schwab's order history before retrying.
+
+Use a separate Worker, KV namespace, Durable Object namespace, encryption key, and preferably Schwab application for a live deployment. Do not change a read-only Worker in place to live mode.
+
+## Logging
+
+The Worker does not intentionally log tokens, order payloads, account hashes, or upstream error bodies. Keep Cloudflare log access restricted. Review any new logging before deployment.
