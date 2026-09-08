@@ -1,4 +1,10 @@
 import { z } from "zod";
+import {
+  decodeUtf8,
+  fromBase64Url,
+  toBase64Url,
+  utf8,
+} from "../security/encoding";
 
 export const MAX_OPTION_CHAIN_RESPONSE_BYTES = 8 * 1_024 * 1_024;
 
@@ -36,7 +42,7 @@ type OptionChainResponse = z.infer<typeof optionChainResponseSchema>;
 
 export interface OptionChainPageOptions {
   outputMode: "paged" | "raw";
-  contractOffset: number;
+  contractCursor?: string | undefined;
   contractLimit: number;
 }
 
@@ -51,10 +57,21 @@ export function formatOptionChainResponse(
     ...flattenContracts("CALL", chain.callExpDateMap),
     ...flattenContracts("PUT", chain.putExpDateMap),
   ].sort(compareContracts);
+  const afterKey = options.contractCursor
+    ? decodeCursor(options.contractCursor)
+    : undefined;
+  const start =
+    afterKey === undefined
+      ? 0
+      : contracts.findIndex(
+          (contract) => compareKeys(contractKey(contract), afterKey) > 0,
+        );
+  const effectiveStart = start < 0 ? contracts.length : start;
   const end = Math.min(
-    options.contractOffset + options.contractLimit,
+    effectiveStart + options.contractLimit,
     contracts.length,
   );
+  const selected = contracts.slice(effectiveStart, end);
   const metadata: Record<string, unknown> = { ...chain };
   delete metadata.callExpDateMap;
   delete metadata.putExpDateMap;
@@ -63,13 +80,17 @@ export function formatOptionChainResponse(
     source: "schwab",
     metadata,
     page: {
-      offset: options.contractOffset,
+      cursor: options.contractCursor ?? null,
       limit: options.contractLimit,
-      returned: Math.max(0, end - options.contractOffset),
+      returned: selected.length,
       totalContracts: contracts.length,
-      nextOffset: end < contracts.length ? end : null,
+      nextCursor:
+        end < contracts.length && selected.length > 0
+          ? encodeCursor(contractKey(selected[selected.length - 1]!))
+          : null,
+      fetchedAt: new Date().toISOString(),
     },
-    contracts: contracts.slice(options.contractOffset, end),
+    contracts: selected,
   };
 }
 
@@ -97,10 +118,35 @@ function flattenContracts(
 }
 
 function compareContracts(left: PagedContract, right: PagedContract): number {
-  return (
-    left.expirationKey.localeCompare(right.expirationKey) ||
-    Number(left.strikeKey) - Number(right.strikeKey) ||
-    left.contractType.localeCompare(right.contractType) ||
-    left.contract.symbol.localeCompare(right.contract.symbol)
-  );
+  return compareKeys(contractKey(left), contractKey(right));
+}
+
+function contractKey(value: PagedContract): string {
+  const strike = Number(value.strikeKey);
+  const sortableStrike = Number.isFinite(strike)
+    ? strike.toFixed(8).padStart(32, "0")
+    : value.strikeKey;
+  return [
+    value.expirationKey,
+    sortableStrike,
+    value.contractType,
+    value.contract.symbol,
+  ].join("\u0000");
+}
+
+function encodeCursor(key: string): string {
+  return `v1.${toBase64Url(utf8(key))}`;
+}
+
+function decodeCursor(cursor: string): string {
+  if (!cursor.startsWith("v1.")) throw new Error("Invalid option-chain cursor");
+  try {
+    return decodeUtf8(fromBase64Url(cursor.slice(3)));
+  } catch {
+    throw new Error("Invalid option-chain cursor");
+  }
+}
+
+function compareKeys(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }

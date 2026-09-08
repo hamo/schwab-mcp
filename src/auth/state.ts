@@ -1,6 +1,7 @@
 import type { AuthRequest } from "@cloudflare/workers-oauth-provider";
 import type { AccessIdentity } from "../types";
 import { hmac, verifyHmac } from "../security/crypto";
+import type { FlowStateStore } from "../storage/vault-client";
 
 const STATE_TTL_SECONDS = 600;
 
@@ -45,20 +46,18 @@ export type StoredState =
   | TradeApprovalState;
 
 export async function createState(
-  kv: KVNamespace,
+  store: FlowStateStore,
   value: StoredState,
   signingKey: string,
 ): Promise<string> {
   const id = crypto.randomUUID();
   const signature = await hmac(id, signingKey);
-  await kv.put(`flow:${id}`, JSON.stringify(value), {
-    expirationTtl: STATE_TTL_SECONDS,
-  });
+  await store.storeFlow(id, value, Date.now() + STATE_TTL_SECONDS * 1_000);
   return `${id}.${signature}`;
 }
 
 export async function consumeState<T extends StoredState["kind"]>(
-  kv: KVNamespace,
+  store: FlowStateStore,
   token: string | null,
   expectedKind: T | readonly T[],
   signingKey: string,
@@ -78,17 +77,11 @@ export async function consumeState<T extends StoredState["kind"]>(
   if (!(await verifyHmac(id, signature, signingKey)))
     throw new FlowError("Invalid state");
 
-  const key = `flow:${id}`;
-  const raw = await kv.get(key);
-  if (!raw) throw new FlowError("State expired or already used");
-  await kv.delete(key);
-
-  let value: StoredState;
-  try {
-    value = JSON.parse(raw) as StoredState;
-  } catch {
-    throw new FlowError("Invalid stored state");
+  const raw = await store.consumeFlow(id);
+  if (!isRecord(raw) || typeof raw.kind !== "string") {
+    throw new FlowError("State expired, invalid, or already used");
   }
+  const value = raw as unknown as StoredState;
   const allowedKinds: readonly StoredState["kind"][] = Array.isArray(
     expectedKind,
   )
@@ -97,6 +90,10 @@ export async function consumeState<T extends StoredState["kind"]>(
   if (!allowedKinds.includes(value.kind))
     throw new FlowError("State purpose mismatch");
   return value as Extract<StoredState, { kind: T }>;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 export class FlowError extends Error {

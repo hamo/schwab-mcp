@@ -13,14 +13,14 @@ ChatGPT/Codex
 Cloudflare Worker ── Cloudflare Access OIDC ── exact owner email
     │
     ├── /mcp (authenticated Streamable HTTP)
-    ├── OAuth state (short-lived, signed, Cloudflare KV)
-    └── encrypted Schwab tokens (single Durable Object)
+    ├── OAuth provider metadata (Cloudflare KV)
+    └── encrypted flow state and Schwab tokens (single Durable Object)
                                       │
                                       ▼
                               Schwab Trader/Market APIs
 ```
 
-The repository contains no credentials. The Worker checks the configured email after cryptographically verifying the Cloudflare Access ID token, including its signature, issuer, audience, authorized party, nonce, and lifetime. Schwab tokens are encrypted with AES-256-GCM before Durable Object storage. Raw account numbers are redacted from MCP responses.
+The repository contains no credentials. The Worker checks the configured email after cryptographically verifying the Cloudflare Access ID token, including its signature, issuer, audience, authorized party, nonce, and lifetime. OAuth and approval state is encrypted and atomically consumed in Durable Object storage. Schwab tokens are encrypted with AES-256-GCM before Durable Object storage. Raw account numbers are redacted from MCP responses.
 
 OAuth clients must use a Client ID Metadata Document (CIMD). Anonymous dynamic client registration is intentionally disabled, so arbitrary visitors cannot create persistent OAuth clients in the deployment. The consent page displays the client ID, exact redirect URI, and requested scopes before authentication. MCP access tokens last one hour and refresh tokens last seven days.
 
@@ -53,14 +53,14 @@ The disabled/read-only deployment registers 19 tools:
 - paged or raw option chains, preserving Schwab-provided Greeks, implied
   volatility, theoretical values, and market timestamps; plus expiration calendars
 - market movers and market hours
-- instrument search and CUSIP lookup
+- paged instrument search and CUSIP lookup
 - account-scoped order lists and individual orders
 - account-scoped transaction lists and individual transactions
 - sanitized market-data permissions and streaming availability
 
 Cross-account reads are implemented as separate account-scoped Schwab requests for only the hashes admitted by the deployment allowlist. User preferences omit account numbers, nicknames, streamer URLs, customer IDs, and correlation IDs.
 
-Large quotes, candles, positions, orders, transactions, and option chains use bounded output pages. Follow `nextOffset` until it is `null`. Each page is a fresh Schwab request, so compare the Schwab-provided quote and trade timestamps before combining rapidly changing market-data pages. `outputMode=raw` is available for queries already narrowed enough to remain below the MCP response limit.
+Large quotes, candles, positions, orders, transactions, instrument searches, and option chains use bounded output pages. Pass each opaque `nextCursor` into the next call until it is `null`; cursor keys are based on stable Schwab identifiers instead of array offsets. Each page is still a fresh Schwab request, so `fetchedAt` and Schwab-provided timestamps identify when values were observed. Records created after a traversal starts may appear on a later page, but inserting them cannot shift the continuation point. `outputMode=raw` is available for queries already narrowed enough to remain below the MCP response limit.
 
 When enabled, three trading tools prepare place, replace, and cancel actions. The typed order schema supports common equity, mutual-fund, option, multi-leg, trailing-stop, OCO, and trigger fields. Only a live deployment with the `mcp:trade` scope registers `schwab_execute_approved_order`, for a total of 23 tools.
 

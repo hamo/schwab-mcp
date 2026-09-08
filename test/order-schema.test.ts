@@ -86,4 +86,31 @@ describe("Schwab order input", () => {
       }).success,
     ).toBe(false);
   });
+
+  it("rejects price fields that contradict the order type", () => {
+    const base = {
+      session: "NORMAL" as const,
+      duration: "DAY" as const,
+      orderStrategyType: "SINGLE" as const,
+      orderLegCollection: [
+        {
+          instruction: "BUY" as const,
+          quantity: 1,
+          instrument: { symbol: "AAPL", assetType: "EQUITY" as const },
+        },
+      ],
+    };
+    expect(
+      orderSchema.safeParse({ ...base, orderType: "MARKET", price: 100 })
+        .success,
+    ).toBe(false);
+    expect(
+      orderSchema.safeParse({
+        ...base,
+        orderType: "LIMIT",
+        price: 100,
+        stopPrice: 90,
+      }).success,
+    ).toBe(false);
+  });
 });

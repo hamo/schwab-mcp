@@ -2,6 +2,7 @@ import type { AuthRequest } from "@cloudflare/workers-oauth-provider";
 import { accessOidcIssuer } from "../config";
 import { fromBase64Url, toBase64Url, utf8 } from "../security/encoding";
 import { fetchWithTimeout, readJsonWithLimit } from "../security/http";
+import { VaultClient } from "../storage/vault-client";
 import type { AccessIdentity, Env } from "../types";
 import {
   createState,
@@ -52,7 +53,7 @@ export async function redirectToAccessForMcp(
   return redirectToAccess(
     request,
     env,
-    await createState(env.OAUTH_KV, state, env.STATE_SIGNING_KEY),
+    await createState(new VaultClient(env), state, env.STATE_SIGNING_KEY),
     state.nonce,
     pkce.challenge,
   );
@@ -73,7 +74,7 @@ export async function redirectToAccessForTrade(
   return redirectToAccess(
     request,
     env,
-    await createState(env.OAUTH_KV, state, env.STATE_SIGNING_KEY),
+    await createState(new VaultClient(env), state, env.STATE_SIGNING_KEY),
     state.nonce,
     pkce.challenge,
   );

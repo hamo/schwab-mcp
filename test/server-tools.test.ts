@@ -50,7 +50,9 @@ describe("MCP tool registration", () => {
               ? { streamerInfo: [], offers: [] }
               : url.pathname.endsWith("/chains")
                 ? { symbol: "SPY", callExpDateMap: {}, putExpDateMap: {} }
-                : {},
+                : url.pathname.endsWith("/instruments")
+                  ? { instruments: [] }
+                  : {},
           ),
         );
       }),
@@ -61,7 +63,6 @@ describe("MCP tool registration", () => {
     await callTool(server, "schwab_get_option_chain", {
       symbol: "SPY",
       outputMode: "paged",
-      contractOffset: 0,
       contractLimit: 25,
     });
     await callTool(server, "schwab_get_option_expirations", { symbol: "SPY" });
@@ -79,6 +80,8 @@ describe("MCP tool registration", () => {
     await callTool(server, "schwab_search_instruments", {
       search: "Apple",
       projection: "desc-search",
+      outputMode: "paged",
+      outputLimit: 25,
     });
     await callTool(server, "schwab_get_instrument_by_cusip", {
       cusip: "037833100",
@@ -102,8 +105,11 @@ describe("MCP tool registration", () => {
       "/trader/v1/userPreference",
     ]);
     expect(urls[1]?.searchParams.has("outputMode")).toBe(false);
-    expect(urls[1]?.searchParams.has("contractOffset")).toBe(false);
+    expect(urls[1]?.searchParams.has("contractCursor")).toBe(false);
     expect(urls[1]?.searchParams.has("contractLimit")).toBe(false);
+    expect(urls[6]?.searchParams.has("outputMode")).toBe(false);
+    expect(urls[6]?.searchParams.has("outputCursor")).toBe(false);
+    expect(urls[6]?.searchParams.has("outputLimit")).toBe(false);
   });
 });
 

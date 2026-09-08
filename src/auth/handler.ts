@@ -75,7 +75,7 @@ async function handleAuthorize(
     if (!client) return errorPage("Unknown OAuth client");
     const csrf = crypto.randomUUID();
     const state = await createState(
-      env.OAUTH_KV,
+      new VaultClient(env),
       { kind: "consent", oauthRequest, csrf },
       env.STATE_SIGNING_KEY,
     );
@@ -92,7 +92,7 @@ async function handleAuthorize(
   if (request.method === "POST") {
     const form = await request.formData();
     const state = await consumeState(
-      env.OAUTH_KV,
+      new VaultClient(env),
       stringField(form, "state"),
       "consent",
       env.STATE_SIGNING_KEY,
@@ -130,7 +130,7 @@ async function handleAccessCallback(
 ): Promise<Response> {
   const rawState = new URL(request.url).searchParams.get("state");
   const state = await consumeState(
-    env.OAUTH_KV,
+    new VaultClient(env),
     rawState,
     ["access-mcp", "access-trade"] as const,
     env.STATE_SIGNING_KEY,
@@ -148,7 +148,7 @@ async function handleAccessCallback(
     );
     const csrf = crypto.randomUUID();
     const approvalState = await createState(
-      env.OAUTH_KV,
+      new VaultClient(env),
       { kind: "trade-approval", preparationId: pending.id, identity, csrf },
       env.STATE_SIGNING_KEY,
     );
@@ -166,7 +166,7 @@ async function handleAccessCallback(
     return completeMcpAuthorization(env, state.oauthRequest, identity);
 
   const schwabState = await createState(
-    env.OAUTH_KV,
+    new VaultClient(env),
     { kind: "schwab", oauthRequest: state.oauthRequest, identity },
     env.STATE_SIGNING_KEY,
   );
@@ -181,7 +181,7 @@ async function handleSchwabCallback(
   env: OAuthEnv,
 ): Promise<Response> {
   const state = await consumeState(
-    env.OAUTH_KV,
+    new VaultClient(env),
     new URL(request.url).searchParams.get("state"),
     "schwab",
     env.STATE_SIGNING_KEY,
@@ -215,7 +215,7 @@ async function handleTradeApproval(
   if (request.method === "POST") {
     const form = await request.formData();
     const state = await consumeState(
-      env.OAUTH_KV,
+      new VaultClient(env),
       stringField(form, "state"),
       "trade-approval",
       env.STATE_SIGNING_KEY,

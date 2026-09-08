@@ -66,7 +66,7 @@ export const priceHistoryInputSchema = z
     needExtendedHoursData: z.boolean().optional(),
     needPreviousClose: z.boolean().optional(),
     outputMode: z.enum(["paged", "raw"]).default("paged"),
-    outputOffset: z.number().int().nonnegative().default(0),
+    outputCursor: z.string().max(2_048).optional(),
     outputLimit: z.number().int().positive().max(50).default(25),
   })
   .strict()
@@ -209,12 +209,11 @@ export const optionChainInputSchema = z
       .describe(
         "Use paged for bounded contract output; use raw only with narrow date and strike filters",
       ),
-    contractOffset: z
-      .number()
-      .int()
-      .nonnegative()
-      .default(0)
-      .describe("Zero-based contract offset for paged output"),
+    contractCursor: z
+      .string()
+      .max(2_048)
+      .optional()
+      .describe("Opaque nextCursor returned by the preceding contract page"),
     contractLimit: z
       .number()
       .int()

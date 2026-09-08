@@ -20,7 +20,7 @@ If a secret reaches Git history, revoke or rotate it immediately. Removing the t
 
 The deployment depends on the security of the owner's email identity provider, Cloudflare account, Schwab account, ChatGPT account, local browser, and deployment secrets. Public source code is not treated as a security boundary.
 
-The OAuth state is HMAC-signed and expires after ten minutes. Cloudflare Access ID tokens are accepted only after signature and claim validation and an exact owner-email comparison. Schwab tokens are encrypted at rest with a deployment-specific key. The Durable Object is reachable only through an internal binding.
+OAuth and approval state is HMAC-signed, encrypted at rest, expires after ten minutes, and is atomically consumed through the Durable Object. Cloudflare Access ID tokens are accepted only after signature and claim validation and an exact owner-email comparison. Schwab tokens are encrypted at rest with a deployment-specific key. The Durable Object is reachable only through an internal binding.
 
 The user-preference tool exposes only market-data permission flags and whether Schwab streaming is available. It removes account numbers, display IDs, nicknames, streamer URLs, customer IDs, channel IDs, function IDs, and correlation IDs.
 

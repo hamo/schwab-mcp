@@ -40,13 +40,12 @@ describe("Schwab option-chain output", () => {
     expect(
       formatOptionChainResponse(response, {
         outputMode: "paged",
-        contractOffset: 0,
         contractLimit: 1,
       }),
     ).toMatchObject({
       source: "schwab",
       metadata: { symbol: "SPY", underlyingPrice: 674 },
-      page: { returned: 1, totalContracts: 2, nextOffset: 1 },
+      page: { returned: 1, totalContracts: 2 },
       contracts: [
         {
           contractType: "CALL",
@@ -64,7 +63,6 @@ describe("Schwab option-chain output", () => {
     expect(
       formatOptionChainResponse(response, {
         outputMode: "raw",
-        contractOffset: 0,
         contractLimit: 25,
       }),
     ).toBe(response);
@@ -76,7 +74,6 @@ describe("Schwab option-chain output", () => {
     expect(() =>
       formatOptionChainResponse(withoutSymbol, {
         outputMode: "paged",
-        contractOffset: 0,
         contractLimit: 25,
       }),
     ).not.toThrow();
@@ -95,8 +92,25 @@ describe("Schwab option-chain output", () => {
             },
           },
         },
-        { outputMode: "paged", contractOffset: 0, contractLimit: 25 },
+        { outputMode: "paged", contractLimit: 25 },
       ),
     ).toThrow();
+  });
+
+  it("continues with an opaque contract cursor", () => {
+    const first = formatOptionChainResponse(response, {
+      outputMode: "paged",
+      contractLimit: 1,
+    }) as { page: { nextCursor: string } };
+    expect(
+      formatOptionChainResponse(response, {
+        outputMode: "paged",
+        contractCursor: first.page.nextCursor,
+        contractLimit: 1,
+      }),
+    ).toMatchObject({
+      contracts: [{ contractType: "PUT" }],
+      page: { nextCursor: null },
+    });
   });
 });

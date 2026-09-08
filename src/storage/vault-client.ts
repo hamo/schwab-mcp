@@ -14,7 +14,12 @@ export interface PreparationSummary {
   approved?: boolean;
 }
 
-export class VaultClient {
+export interface FlowStateStore {
+  storeFlow(id: string, value: unknown, expiresAt: number): Promise<void>;
+  consumeFlow(id: string): Promise<unknown>;
+}
+
+export class VaultClient implements FlowStateStore {
   private readonly stub: DurableObjectStub;
 
   constructor(env: Pick<Env, "TOKEN_VAULT">) {
@@ -56,6 +61,18 @@ export class VaultClient {
       "POST",
       { digest },
     );
+  }
+
+  async storeFlow(
+    id: string,
+    value: unknown,
+    expiresAt: number,
+  ): Promise<void> {
+    await this.request("/flows", "POST", { id, value, expiresAt });
+  }
+
+  consumeFlow(id: string): Promise<unknown> {
+    return this.request(`/flows/${encodeURIComponent(id)}/consume`, "POST");
   }
 
   private async request<T>(

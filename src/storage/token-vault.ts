@@ -15,6 +15,7 @@ import type { Env } from "../types";
 
 const TOKEN_KEY = "schwab-session";
 const PREPARATION_TTL_MS = 10 * 60 * 1_000;
+const MAX_FLOW_TTL_MS = 10 * 60 * 1_000;
 
 export class SchwabTokenVault extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
@@ -30,6 +31,16 @@ export class SchwabTokenVault extends DurableObject<Env> {
         return this.accessSession();
       if (request.method === "POST" && url.pathname === "/preparations") {
         return this.createPreparation(request);
+      }
+      if (request.method === "POST" && url.pathname === "/flows") {
+        return this.storeFlow(request);
+      }
+
+      const flowMatch = /^\/flows\/([0-9a-f-]{36})\/consume$/.exec(
+        url.pathname,
+      );
+      if (request.method === "POST" && flowMatch?.[1]) {
+        return this.consumeFlow(flowMatch[1]);
       }
 
       const preparationMatch =
@@ -199,6 +210,53 @@ export class SchwabTokenVault extends DurableObject<Env> {
     return Response.json(pending.action);
   }
 
+  private async storeFlow(request: Request): Promise<Response> {
+    const input = await readJson(request);
+    const now = Date.now();
+    if (
+      !isRecord(input) ||
+      typeof input.id !== "string" ||
+      !isUuid(input.id) ||
+      !isRecord(input.value) ||
+      typeof input.expiresAt !== "number" ||
+      !Number.isFinite(input.expiresAt) ||
+      input.expiresAt <= now ||
+      input.expiresAt > now + MAX_FLOW_TTL_MS
+    ) {
+      return Response.json({ error: "invalid_flow" }, { status: 400 });
+    }
+    const flow: StoredFlow = {
+      value: input.value,
+      expiresAt: input.expiresAt,
+    };
+    await this.ctx.storage.put(
+      this.flowKey(input.id),
+      await encryptJson(flow, this.env.TOKEN_ENCRYPTION_KEY),
+    );
+    await this.scheduleCleanup(flow.expiresAt);
+    return Response.json({ stored: true });
+  }
+
+  private async consumeFlow(id: string): Promise<Response> {
+    const key = this.flowKey(id);
+    const encrypted = await this.ctx.storage.transaction(
+      async (transaction) => {
+        const value = await transaction.get<ReturnTypeShape>(key);
+        if (value !== undefined) await transaction.delete(key);
+        return value;
+      },
+    );
+    if (!encrypted) return Response.json(null);
+    const flow = await decryptJson<StoredFlow>(
+      encrypted,
+      this.env.TOKEN_ENCRYPTION_KEY,
+    );
+    if (!isStoredFlow(flow) || flow.expiresAt <= Date.now()) {
+      return Response.json(null);
+    }
+    return Response.json(flow.value);
+  }
+
   private async loadSession(): Promise<StoredSchwabSession | null> {
     const encrypted = await this.ctx.storage.get<ReturnTypeShape>(TOKEN_KEY);
     return encrypted
@@ -222,6 +280,10 @@ export class SchwabTokenVault extends DurableObject<Env> {
     return `preparation:${id}`;
   }
 
+  private flowKey(id: string): string {
+    return `flow:${id}`;
+  }
+
   async alarm(): Promise<void> {
     const values = await this.ctx.storage.list<ReturnTypeShape>({
       prefix: "preparation:",
@@ -242,6 +304,20 @@ export class SchwabTokenVault extends DurableObject<Env> {
         nextExpiration = pending.expiresAt;
       }
     }
+    const flows = await this.ctx.storage.list<ReturnTypeShape>({
+      prefix: "flow:",
+    });
+    for (const [key, encrypted] of flows) {
+      const flow = await decryptJson<StoredFlow>(
+        encrypted,
+        this.env.TOKEN_ENCRYPTION_KEY,
+      );
+      if (flow.expiresAt <= now) {
+        await this.ctx.storage.delete(key);
+      } else if (nextExpiration === null || flow.expiresAt < nextExpiration) {
+        nextExpiration = flow.expiresAt;
+      }
+    }
     if (nextExpiration !== null)
       await this.ctx.storage.setAlarm(nextExpiration);
   }
@@ -254,6 +330,11 @@ export class SchwabTokenVault extends DurableObject<Env> {
 }
 
 type ReturnTypeShape = Awaited<ReturnType<typeof encryptJson>>;
+
+interface StoredFlow {
+  value: Record<string, unknown>;
+  expiresAt: number;
+}
 
 function isStoredSession(value: unknown): value is StoredSchwabSession {
   return (
@@ -294,6 +375,21 @@ function isPendingAction(value: unknown): value is PendingAction {
     return typeof value.orderId === "string" && isRecord(value.order);
   }
   return value.kind === "cancel" && typeof value.orderId === "string";
+}
+
+function isStoredFlow(value: unknown): value is StoredFlow {
+  return (
+    isRecord(value) &&
+    isRecord(value.value) &&
+    typeof value.expiresAt === "number" &&
+    Number.isFinite(value.expiresAt)
+  );
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value,
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
