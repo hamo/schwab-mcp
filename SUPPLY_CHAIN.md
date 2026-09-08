@@ -28,6 +28,7 @@ Cloudflare Wrangler itself may collect its documented anonymous CLI telemetry du
 ## Controls
 
 - Exact package versions and npm lockfile v3
+- lifecycle scripts disabled by default in the repository's npm configuration
 - `npm ci` in CI
 - CI lifecycle scripts disabled
 - npm vulnerability audit for production dependencies

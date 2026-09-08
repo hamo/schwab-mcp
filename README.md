@@ -50,7 +50,8 @@ The disabled/read-only deployment registers 19 tools:
 - accounts, balances, and optional positions
 - bulk and single-symbol quotes, including extended and fundamental fields
 - price history with validated period/frequency combinations
-- option chains and option expiration calendars
+- paged or raw option chains, preserving Schwab-provided Greeks, implied
+  volatility, theoretical values, and market timestamps; plus expiration calendars
 - market movers and market hours
 - instrument search and CUSIP lookup
 - account-scoped order lists and individual orders
@@ -58,6 +59,8 @@ The disabled/read-only deployment registers 19 tools:
 - sanitized market-data permissions and streaming availability
 
 Cross-account reads are implemented as separate account-scoped Schwab requests for only the hashes admitted by the deployment allowlist. User preferences omit account numbers, nicknames, streamer URLs, customer IDs, and correlation IDs.
+
+Large quotes, candles, positions, orders, transactions, and option chains use bounded output pages. Follow `nextOffset` until it is `null`. Each page is a fresh Schwab request, so compare the Schwab-provided quote and trade timestamps before combining rapidly changing market-data pages. `outputMode=raw` is available for queries already narrowed enough to remain below the MCP response limit.
 
 When enabled, three trading tools prepare place, replace, and cancel actions. The typed order schema supports common equity, mutual-fund, option, multi-leg, trailing-stop, OCO, and trigger fields. Only a live deployment with the `mcp:trade` scope registers `schwab_execute_approved_order`, for a total of 23 tools.
 
@@ -70,7 +73,7 @@ These steps work with Cloudflare's free tier, including SQLite-backed Durable Ob
 1. Install and verify the project.
 
    ```sh
-   npm ci
+   npm ci --ignore-scripts
    npm run check
    npm run supply-chain
    ```

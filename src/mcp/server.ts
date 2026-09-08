@@ -24,14 +24,27 @@ import {
   optionChainInputSchema,
   priceHistoryInputSchema,
   quoteFieldsInputSchema,
+  tradableSymbolSchema,
 } from "./market-schemas";
+import {
+  formatOptionChainResponse,
+  MAX_OPTION_CHAIN_RESPONSE_BYTES,
+} from "./option-chain";
+import {
+  formatAccountPositionsPage,
+  formatAllowedAccountPositionsPage,
+  formatAllowedOrdersPage,
+  formatArrayPage,
+  formatPriceHistoryPage,
+  formatRecordPage,
+} from "./pagination";
 
 const accountHashSchema = z
   .string()
   .min(8)
   .max(128)
   .regex(/^[A-Za-z0-9_-]+$/, "Invalid account hash");
-const symbolSchema = marketSymbolSchema;
+const symbolSchema = tradableSymbolSchema;
 const isoDateSchema = z.string().datetime({ offset: true });
 const calendarDateSchema = z.string().date();
 const cusipSchema = z
@@ -56,6 +69,25 @@ const priceSchema = z.union([
     .max(32)
     .regex(/^\d+(?:\.\d+)?$/),
 ]);
+const outputPaginationShape = {
+  outputMode: z
+    .enum(["paged", "raw"])
+    .default("paged")
+    .describe("Use paged for bounded output; raw may exceed the MCP limit"),
+  outputOffset: z
+    .number()
+    .int()
+    .nonnegative()
+    .default(0)
+    .describe("Zero-based item offset for paged output"),
+  outputLimit: z
+    .number()
+    .int()
+    .positive()
+    .max(50)
+    .default(25)
+    .describe("Maximum requested items; the safe-size limit may return fewer"),
+};
 
 export const orderSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
   z
@@ -69,7 +101,6 @@ export const orderSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
         "END_OF_WEEK",
         "END_OF_MONTH",
         "NEXT_END_OF_MONTH",
-        "UNKNOWN",
       ]),
       orderType: z.enum([
         "MARKET",
@@ -147,7 +178,7 @@ export const orderSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
         ])
         .optional(),
       stopPriceLinkType: z.enum(["VALUE", "PERCENT", "TICK"]).optional(),
-      stopPriceOffset: z.number().finite().optional(),
+      stopPriceOffset: z.number().finite().positive().optional(),
       stopType: z.enum(["STANDARD", "BID", "ASK", "LAST", "MARK"]).optional(),
       priceLinkBasis: z
         .enum([
@@ -240,12 +271,58 @@ export const orderSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
       childOrderStrategies: z.array(orderSchema).min(1).max(10).optional(),
     })
     .strict()
-    .refine(
-      (order) =>
-        order.orderLegCollection !== undefined ||
-        order.childOrderStrategies !== undefined,
-      "Order must contain legs or child strategies",
-    ),
+    .superRefine((order, context) => {
+      if (
+        order.orderLegCollection === undefined &&
+        order.childOrderStrategies === undefined
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "Order must contain legs or child strategies",
+        });
+      }
+      if (
+        [
+          "LIMIT",
+          "STOP_LIMIT",
+          "LIMIT_ON_CLOSE",
+          "NET_DEBIT",
+          "NET_CREDIT",
+        ].includes(order.orderType) &&
+        order.price === undefined
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["price"],
+          message: `price is required for ${order.orderType} orders`,
+        });
+      }
+      if (
+        ["STOP", "STOP_LIMIT"].includes(order.orderType) &&
+        order.stopPrice === undefined
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["stopPrice"],
+          message: `stopPrice is required for ${order.orderType} orders`,
+        });
+      }
+      if (["TRAILING_STOP", "TRAILING_STOP_LIMIT"].includes(order.orderType)) {
+        for (const field of [
+          "stopPriceLinkBasis",
+          "stopPriceLinkType",
+          "stopPriceOffset",
+        ] as const) {
+          if (order[field] === undefined) {
+            context.addIssue({
+              code: "custom",
+              path: [field],
+              message: `${field} is required for ${order.orderType} orders`,
+            });
+          }
+        }
+      }
+    }),
 );
 
 export function createSchwabMcpServer(
@@ -290,28 +367,48 @@ export function createSchwabMcpServer(
     "schwab_list_accounts",
     {
       description:
-        "List Schwab brokerage accounts. Raw account numbers are redacted.",
-      inputSchema: z.object({ includePositions: z.boolean().default(false) }),
+        "List Schwab brokerage accounts. Raw account numbers are redacted; requested positions use bounded paging.",
+      inputSchema: z.object({
+        includePositions: z.boolean().default(false),
+        ...outputPaginationShape,
+      }),
       annotations: { readOnlyHint: true },
     },
-    async ({ includePositions }) => {
+    async ({ includePositions, outputMode, outputOffset, outputLimit }) => {
       const session = await vault.accessSession();
       const data = await getAllowedAccounts(env, session, includePositions);
-      return result(redactAccountNumbers(data));
+      const redacted = redactAccountNumbers(data);
+      return result(
+        includePositions
+          ? formatAllowedAccountPositionsPage(redacted, {
+              outputMode,
+              outputOffset,
+              outputLimit,
+            })
+          : redacted,
+      );
     },
   );
 
   server.registerTool(
     "schwab_get_account",
     {
-      description: "Get one Schwab account by its encrypted account hash.",
+      description:
+        "Get one Schwab account by its encrypted account hash. Requested positions use bounded paging.",
       inputSchema: z.object({
         accountHash: accountHashSchema,
         includePositions: z.boolean().default(false),
+        ...outputPaginationShape,
       }),
       annotations: { readOnlyHint: true },
     },
-    async ({ accountHash, includePositions }) => {
+    async ({
+      accountHash,
+      includePositions,
+      outputMode,
+      outputOffset,
+      outputLimit,
+    }) => {
       const session = await allowedSession(vault, accountHash);
       const data = await schwabRequest<unknown>(
         env,
@@ -319,38 +416,61 @@ export function createSchwabMcpServer(
         `/trader/v1/accounts/${encodeURIComponent(accountHash)}`,
         { query: { fields: includePositions ? "positions" : undefined } },
       );
-      return result(redactAccountNumbers(data));
+      const redacted = redactAccountNumbers(data);
+      return result(
+        includePositions
+          ? formatAccountPositionsPage(redacted, {
+              outputMode,
+              outputOffset,
+              outputLimit,
+            })
+          : redacted,
+      );
     },
   );
 
   server.registerTool(
     "schwab_get_quotes",
     {
-      description: "Get current Schwab market quotes for up to 50 symbols.",
+      description:
+        "Get current Schwab market quotes for up to 50 symbols with bounded output paging.",
       inputSchema: z
         .object({
           symbols: z.array(symbolSchema).min(1).max(50),
           fields: quoteFieldsInputSchema.optional(),
           indicative: z.boolean().optional(),
+          ...outputPaginationShape,
         })
         .strict(),
       annotations: { readOnlyHint: true },
     },
-    async ({ symbols, fields, indicative }) => {
+    async ({
+      symbols,
+      fields,
+      indicative,
+      outputMode,
+      outputOffset,
+      outputLimit,
+    }) => {
       const session = await vault.accessSession();
-      return result(
-        await schwabRequest<unknown>(
-          env,
-          session.accessToken,
-          "/marketdata/v1/quotes",
-          {
-            query: {
-              symbols: symbols.join(","),
-              fields: fields?.join(","),
-              indicative,
-            },
+      const data = await schwabRequest<unknown>(
+        env,
+        session.accessToken,
+        "/marketdata/v1/quotes",
+        {
+          query: {
+            symbols: symbols.join(","),
+            fields: fields?.join(","),
+            indicative,
           },
-        ),
+        },
+      );
+      return result(
+        formatRecordPage(data, "quotes", {
+          outputMode,
+          outputOffset,
+          outputLimit,
+        }),
       );
     },
   );
@@ -383,21 +503,27 @@ export function createSchwabMcpServer(
   server.registerTool(
     "schwab_get_price_history",
     {
-      description: "Get historical price candles for a symbol.",
+      description:
+        "Get historical price candles for a symbol with bounded output paging.",
       inputSchema: priceHistoryInputSchema,
       annotations: { readOnlyHint: true },
     },
-    async ({ symbol, ...query }) => {
+    async ({ symbol, outputMode, outputOffset, outputLimit, ...query }) => {
       const session = await vault.accessSession();
+      const data = await schwabRequest<unknown>(
+        env,
+        session.accessToken,
+        "/marketdata/v1/pricehistory",
+        {
+          query: normalizePriceHistoryDates({ symbol, ...query }),
+        },
+      );
       return result(
-        await schwabRequest<unknown>(
-          env,
-          session.accessToken,
-          "/marketdata/v1/pricehistory",
-          {
-            query: normalizePriceHistoryDates({ symbol, ...query }),
-          },
-        ),
+        formatPriceHistoryPage(data, {
+          outputMode,
+          outputOffset,
+          outputLimit,
+        }),
       );
     },
   );
@@ -406,21 +532,27 @@ export function createSchwabMcpServer(
     "schwab_get_option_chain",
     {
       description:
-        "Get a Schwab option chain. Narrow the date and strike range to limit output.",
+        "Get a Schwab option chain with Schwab-provided Greeks and theoretical values. Output is paged by default; use raw only after narrowing dates and strikes.",
       inputSchema: optionChainInputSchema,
       annotations: { readOnlyHint: true },
     },
-    async (query) => {
+    async ({ outputMode, contractOffset, contractLimit, ...query }) => {
       const session = await vault.accessSession();
+      const data = await schwabRequest<unknown>(
+        env,
+        session.accessToken,
+        "/marketdata/v1/chains",
+        {
+          query,
+          maxResponseBytes: MAX_OPTION_CHAIN_RESPONSE_BYTES,
+        },
+      );
       return result(
-        await schwabRequest<unknown>(
-          env,
-          session.accessToken,
-          "/marketdata/v1/chains",
-          {
-            query,
-          },
-        ),
+        formatOptionChainResponse(data, {
+          outputMode,
+          contractOffset,
+          contractLimit,
+        }),
       );
     },
   );
@@ -429,7 +561,7 @@ export function createSchwabMcpServer(
     "schwab_get_option_expirations",
     {
       description: "List available option expiration dates for a symbol.",
-      inputSchema: z.object({ symbol: symbolSchema }).strict(),
+      inputSchema: z.object({ symbol: marketSymbolSchema }).strict(),
       annotations: { readOnlyHint: true },
     },
     async ({ symbol }) => {
@@ -581,19 +713,23 @@ export function createSchwabMcpServer(
     "schwab_get_orders",
     {
       description:
-        "Get orders across all allowed Schwab accounts for a bounded date range.",
+        "Get paged orders across all allowed Schwab accounts for a bounded date range. maxResults bounds each upstream account response.",
       inputSchema: z.object({
         fromEnteredTime: isoDateSchema,
         toEnteredTime: isoDateSchema,
         maxResults: z.number().int().positive().max(3000).default(100),
         status: z.string().max(64).optional(),
+        ...outputPaginationShape,
       }),
       annotations: { readOnlyHint: true },
     },
-    async (query) => {
+    async ({ outputMode, outputOffset, outputLimit, ...query }) => {
       const session = await vault.accessSession();
       return result(
-        redactAccountNumbers(await getAllowedOrders(env, session, query)),
+        formatAllowedOrdersPage(
+          redactAccountNumbers(await getAllowedOrders(env, session, query)),
+          { outputMode, outputOffset, outputLimit },
+        ),
       );
     },
   );
@@ -625,27 +761,39 @@ export function createSchwabMcpServer(
   server.registerTool(
     "schwab_get_transactions",
     {
-      description: "Get transactions for one allowed Schwab account.",
+      description: "Get paged transactions for one allowed Schwab account.",
       inputSchema: z.object({
         accountHash: accountHashSchema,
         startDate: isoDateSchema,
         endDate: isoDateSchema,
         types: z.string().min(1).max(256),
         symbol: symbolSchema.optional(),
+        ...outputPaginationShape,
       }),
       annotations: { readOnlyHint: true },
     },
-    async ({ accountHash, ...query }) => {
+    async ({
+      accountHash,
+      outputMode,
+      outputOffset,
+      outputLimit,
+      ...query
+    }) => {
       const session = await allowedSession(vault, accountHash);
-      return result(
-        redactAccountNumbers(
-          await schwabRequest<unknown>(
-            env,
-            session.accessToken,
-            `/trader/v1/accounts/${encodeURIComponent(accountHash)}/transactions`,
-            { query },
-          ),
+      const data = redactAccountNumbers(
+        await schwabRequest<unknown>(
+          env,
+          session.accessToken,
+          `/trader/v1/accounts/${encodeURIComponent(accountHash)}/transactions`,
+          { query },
         ),
+      );
+      return result(
+        formatArrayPage(data, "transactions", {
+          outputMode,
+          outputOffset,
+          outputLimit,
+        }),
       );
     },
   );
@@ -870,7 +1018,7 @@ async function allowedSession(
 
 function result(value: unknown) {
   const structuredContent = { result: value };
-  let text = JSON.stringify(structuredContent, null, 2);
+  let text = JSON.stringify(structuredContent);
   if (text.length > 120_000) {
     text = JSON.stringify({
       error: "Response exceeded the safe MCP output limit. Narrow the query.",

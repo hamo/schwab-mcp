@@ -4,6 +4,7 @@ import {
   optionChainInputSchema,
   priceHistoryInputSchema,
   quoteFieldsInputSchema,
+  tradableSymbolSchema,
 } from "../src/mcp/market-schemas";
 
 describe("market-data inputs", () => {
@@ -24,8 +25,18 @@ describe("market-data inputs", () => {
     ).toMatchObject({
       symbol: "AAPL",
       startDate: Date.UTC(2026, 0, 2),
-      endDate: Date.UTC(2026, 0, 3),
+      endDate: Date.UTC(2026, 0, 4) - 1,
     });
+  });
+
+  it("accepts an epoch start within a calendar end date", () => {
+    expect(
+      priceHistoryInputSchema.safeParse({
+        symbol: "AAPL",
+        startDate: Date.UTC(2026, 0, 3, 12),
+        endDate: "2026-01-03",
+      }).success,
+    ).toBe(true);
   });
 
   it("rejects invalid period and frequency combinations", () => {
@@ -34,6 +45,14 @@ describe("market-data inputs", () => {
         symbol: "AAPL",
         periodType: "ytd",
         period: 2,
+      }).success,
+    ).toBe(false);
+    expect(
+      priceHistoryInputSchema.safeParse({
+        symbol: "AAPL",
+        periodType: "day",
+        frequencyType: "monthly",
+        frequency: 1,
       }).success,
     ).toBe(false);
     expect(
@@ -62,5 +81,11 @@ describe("market-data inputs", () => {
         toDate: "2026-01-01",
       }).success,
     ).toBe(false);
+  });
+
+  it("accepts Schwab option contract symbols with internal padding", () => {
+    expect(tradableSymbolSchema.parse("SPY   251106C00674000")).toBe(
+      "SPY   251106C00674000",
+    );
   });
 });

@@ -54,6 +54,19 @@ describe("Schwab HTTP client", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
+  it("bounds endpoint-specific response size overrides", async () => {
+    const fetcher = vi.fn();
+    await expect(
+      schwabRequest(
+        { SCHWAB_ENVIRONMENT: "production" },
+        "token",
+        "/marketdata/v1/chains",
+        { maxResponseBytes: 8 * 1_024 * 1_024 + 1, fetcher },
+      ),
+    ).rejects.toThrow("response size limit");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("uses only account-scoped endpoints for allowlisted account reads", async () => {
     const urls: string[] = [];
     const fetcher = vi.fn((input: RequestInfo | URL) => {

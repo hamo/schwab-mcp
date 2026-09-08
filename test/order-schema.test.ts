@@ -48,4 +48,42 @@ describe("Schwab order input", () => {
       }).success,
     ).toBe(false);
   });
+
+  it("requires prices and trailing-stop parameters by order type", () => {
+    const leg = {
+      instruction: "BUY" as const,
+      quantity: 1,
+      instrument: {
+        symbol: "SPY   251106C00674000",
+        assetType: "OPTION" as const,
+      },
+    };
+    expect(
+      orderSchema.safeParse({
+        session: "NORMAL",
+        duration: "DAY",
+        orderType: "LIMIT",
+        orderStrategyType: "SINGLE",
+        orderLegCollection: [leg],
+      }).success,
+    ).toBe(false);
+    expect(
+      orderSchema.safeParse({
+        session: "NORMAL",
+        duration: "DAY",
+        orderType: "STOP",
+        orderStrategyType: "SINGLE",
+        orderLegCollection: [leg],
+      }).success,
+    ).toBe(false);
+    expect(
+      orderSchema.safeParse({
+        session: "NORMAL",
+        duration: "DAY",
+        orderType: "TRAILING_STOP",
+        orderStrategyType: "SINGLE",
+        orderLegCollection: [leg],
+      }).success,
+    ).toBe(false);
+  });
 });

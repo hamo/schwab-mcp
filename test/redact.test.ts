@@ -9,10 +9,12 @@ describe("account number redaction", () => {
     expect(
       redactAccountNumbers({
         accountNumber: "123456789",
-        securitiesAccount: { accountId: "987654321", hashValue: "safe-hash" },
+        order: { accountNumber: 123456789 },
+        securitiesAccount: { accountId: 987654321, hashValue: "safe-hash" },
       }),
     ).toEqual({
       accountNumber: "••••6789",
+      order: { accountNumber: "••••6789" },
       securitiesAccount: { accountId: "••••4321", hashValue: "safe-hash" },
     });
   });

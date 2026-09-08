@@ -7,6 +7,16 @@ export const marketSymbolSchema = z
   .max(32)
   .regex(/^[A-Za-z0-9.$/:_-]+$/);
 
+export const tradableSymbolSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(
+    /^[A-Za-z0-9.$/:_ -]+$/,
+    "Symbol may contain only supported market-symbol characters",
+  );
+
 export const quoteFieldSchema = z.enum([
   "quote",
   "fundamental",
@@ -55,6 +65,9 @@ export const priceHistoryInputSchema = z
       .optional(),
     needExtendedHoursData: z.boolean().optional(),
     needPreviousClose: z.boolean().optional(),
+    outputMode: z.enum(["paged", "raw"]).default("paged"),
+    outputOffset: z.number().int().nonnegative().default(0),
+    outputLimit: z.number().int().positive().max(50).default(25),
   })
   .strict()
   .superRefine((value, context) => {
@@ -85,7 +98,7 @@ export const priceHistoryInputSchema = z
     if (
       value.startDate !== undefined &&
       value.endDate !== undefined &&
-      toEpochMillis(value.startDate) > toEpochMillis(value.endDate)
+      toEpochMillis(value.startDate) > toEpochMillis(value.endDate, "end")
     ) {
       context.addIssue({
         code: "custom",
@@ -105,6 +118,23 @@ export const priceHistoryInputSchema = z
         message: `frequency must be 1 for ${value.frequencyType} candles`,
       });
     }
+    const allowedFrequencyTypes: Record<string, string[]> = {
+      day: ["minute"],
+      month: ["daily", "weekly"],
+      year: ["daily", "weekly", "monthly"],
+      ytd: ["daily", "weekly"],
+    };
+    if (
+      value.periodType &&
+      value.frequencyType &&
+      !allowedFrequencyTypes[value.periodType]?.includes(value.frequencyType)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["frequencyType"],
+        message: `Invalid frequencyType for periodType=${value.periodType}`,
+      });
+    }
   });
 
 export function normalizePriceHistoryDates(
@@ -118,7 +148,7 @@ export function normalizePriceHistoryDates(
       ? { startDate: toEpochMillis(startDate) }
       : {}),
     ...(typeof endDate === "string" || typeof endDate === "number"
-      ? { endDate: toEpochMillis(endDate) }
+      ? { endDate: toEpochMillis(endDate, "end") }
       : {}),
   };
 }
@@ -173,6 +203,25 @@ export const optionChainInputSchema = z
       .optional(),
     optionType: z.enum(["S", "NS", "ALL"]).optional(),
     entitlement: z.enum(["PN", "NP", "PP"]).optional(),
+    outputMode: z
+      .enum(["paged", "raw"])
+      .default("paged")
+      .describe(
+        "Use paged for bounded contract output; use raw only with narrow date and strike filters",
+      ),
+    contractOffset: z
+      .number()
+      .int()
+      .nonnegative()
+      .default(0)
+      .describe("Zero-based contract offset for paged output"),
+    contractLimit: z
+      .number()
+      .int()
+      .positive()
+      .max(50)
+      .default(25)
+      .describe("Maximum contracts returned in paged output"),
   })
   .strict()
   .refine(
@@ -212,8 +261,11 @@ export const instrumentProjectionSchema = z.enum([
   "fundamental",
 ]);
 
-function toEpochMillis(value: number | string): number {
-  return typeof value === "number"
-    ? value
-    : Date.parse(`${value}T00:00:00.000Z`);
+function toEpochMillis(
+  value: number | string,
+  boundary: "start" | "end" = "start",
+): number {
+  if (typeof value === "number") return value;
+  const start = Date.parse(`${value}T00:00:00.000Z`);
+  return boundary === "end" ? start + 24 * 60 * 60 * 1_000 - 1 : start;
 }

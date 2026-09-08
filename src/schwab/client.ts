@@ -13,11 +13,13 @@ const AUTH_PATH = "/v1/oauth/authorize";
 const MAX_ERROR_BODY = 2_000;
 const MAX_TOKEN_BODY = 64 * 1_024;
 const MAX_API_BODY = 2 * 1_024 * 1_024;
+const MAX_EXTENDED_API_BODY = 8 * 1_024 * 1_024;
 
 export interface SchwabRequestOptions {
   method?: "GET" | "POST" | "PUT" | "DELETE";
   query?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
+  maxResponseBytes?: number;
   fetcher?: typeof fetch;
 }
 
@@ -128,6 +130,14 @@ export async function schwabRequest<T>(
   path: string,
   options: SchwabRequestOptions = {},
 ): Promise<T> {
+  const maxResponseBytes = options.maxResponseBytes ?? MAX_API_BODY;
+  if (
+    !Number.isSafeInteger(maxResponseBytes) ||
+    maxResponseBytes < 1 ||
+    maxResponseBytes > MAX_EXTENDED_API_BODY
+  ) {
+    throw new Error("Invalid Schwab API response size limit");
+  }
   if (!path.startsWith("/marketdata/v1/") && !path.startsWith("/trader/v1/")) {
     throw new Error(
       "Refusing a Schwab API path outside the allowlisted API prefixes",
@@ -174,7 +184,7 @@ export async function schwabRequest<T>(
   }
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.includes("application/json"))
-    return (await readJsonWithLimit(response, MAX_API_BODY)) as T;
+    return (await readJsonWithLimit(response, maxResponseBytes)) as T;
   return {
     ok: true,
     status: response.status,

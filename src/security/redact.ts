@@ -5,8 +5,13 @@ export function redactAccountNumbers(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
   const output: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (ACCOUNT_KEYS.has(key) && typeof child === "string") {
-      output[key] = child.length <= 4 ? "••••" : `••••${child.slice(-4)}`;
+    if (
+      ACCOUNT_KEYS.has(key) &&
+      (typeof child === "string" || typeof child === "number")
+    ) {
+      const accountNumber = String(child);
+      output[key] =
+        accountNumber.length <= 4 ? "••••" : `••••${accountNumber.slice(-4)}`;
     } else {
       output[key] = redactAccountNumbers(child);
     }

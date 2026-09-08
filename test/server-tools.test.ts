@@ -48,7 +48,9 @@ describe("MCP tool registration", () => {
           Response.json(
             url.pathname.endsWith("/userPreference")
               ? { streamerInfo: [], offers: [] }
-              : {},
+              : url.pathname.endsWith("/chains")
+                ? { symbol: "SPY", callExpDateMap: {}, putExpDateMap: {} }
+                : {},
           ),
         );
       }),
@@ -56,6 +58,12 @@ describe("MCP tool registration", () => {
     const server = createServer("disabled", ["mcp:read"]);
 
     await callTool(server, "schwab_get_quote", { symbol: "AAPL" });
+    await callTool(server, "schwab_get_option_chain", {
+      symbol: "SPY",
+      outputMode: "paged",
+      contractOffset: 0,
+      contractLimit: 25,
+    });
     await callTool(server, "schwab_get_option_expirations", { symbol: "SPY" });
     await callTool(server, "schwab_get_movers", {
       index: "$SPX",
@@ -83,6 +91,7 @@ describe("MCP tool registration", () => {
 
     expect(urls.map((url) => url.pathname)).toEqual([
       "/marketdata/v1/AAPL/quotes",
+      "/marketdata/v1/chains",
       "/marketdata/v1/expirationchain",
       "/marketdata/v1/movers/%24SPX",
       "/marketdata/v1/markets",
@@ -92,6 +101,9 @@ describe("MCP tool registration", () => {
       "/trader/v1/accounts/allowed_hash/transactions/9007199254740993",
       "/trader/v1/userPreference",
     ]);
+    expect(urls[1]?.searchParams.has("outputMode")).toBe(false);
+    expect(urls[1]?.searchParams.has("contractOffset")).toBe(false);
+    expect(urls[1]?.searchParams.has("contractLimit")).toBe(false);
   });
 });
 
