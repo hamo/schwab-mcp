@@ -134,6 +134,14 @@ export async function schwabRequest<T>(
     );
   }
   const url = new URL(path, schwabBaseUrl(env));
+  if (
+    !url.pathname.startsWith("/marketdata/v1/") &&
+    !url.pathname.startsWith("/trader/v1/")
+  ) {
+    throw new Error(
+      "Refusing a normalized Schwab API path outside the allowlist",
+    );
+  }
   for (const [key, value] of Object.entries(options.query ?? {})) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }

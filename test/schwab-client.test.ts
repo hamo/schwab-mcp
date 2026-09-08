@@ -41,6 +41,19 @@ describe("Schwab HTTP client", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
+  it("refuses path traversal after URL normalization", async () => {
+    const fetcher = vi.fn();
+    await expect(
+      schwabRequest(
+        { SCHWAB_ENVIRONMENT: "production" },
+        "token",
+        "/marketdata/v1/../../v1/oauth/token",
+        { fetcher },
+      ),
+    ).rejects.toThrow("normalized Schwab API path");
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("uses only account-scoped endpoints for allowlisted account reads", async () => {
     const urls: string[] = [];
     const fetcher = vi.fn((input: RequestInfo | URL) => {

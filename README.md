@@ -44,9 +44,24 @@ Use separate Worker names, KV namespaces, and Schwab applications for read-only,
 
 ## Implemented tools
 
-Read-only tools cover connection status, account hashes/fingerprints, accounts and positions, quotes, price history, option chains, orders, individual orders, and transactions. Cross-account reads are implemented as separate account-scoped Schwab requests for only the hashes admitted by the deployment allowlist.
+The disabled/read-only deployment registers 19 tools:
 
-When enabled, trading tools prepare place, replace, and cancel actions. Only a live deployment registers `schwab_execute_approved_order`.
+- connection status and allowed account hashes/fingerprints
+- accounts, balances, and optional positions
+- bulk and single-symbol quotes, including extended and fundamental fields
+- price history with validated period/frequency combinations
+- option chains and option expiration calendars
+- market movers and market hours
+- instrument search and CUSIP lookup
+- account-scoped order lists and individual orders
+- account-scoped transaction lists and individual transactions
+- sanitized market-data permissions and streaming availability
+
+Cross-account reads are implemented as separate account-scoped Schwab requests for only the hashes admitted by the deployment allowlist. User preferences omit account numbers, nicknames, streamer URLs, customer IDs, and correlation IDs.
+
+When enabled, three trading tools prepare place, replace, and cancel actions. The typed order schema supports common equity, mutual-fund, option, multi-leg, trailing-stop, OCO, and trigger fields. Only a live deployment with the `mcp:trade` scope registers `schwab_execute_approved_order`, for a total of 23 tools.
+
+Continuous Schwab Streamer subscriptions are intentionally not included. Cloudflare cannot hibernate a Durable Object that holds an outbound WebSocket, so a persistent market-data connection consumes duration even while idle and can exhaust a free-plan allowance. The sanitized user-preference tool reports whether streaming is available without exposing the connection credentials.
 
 ## Deploy the read-only version
 

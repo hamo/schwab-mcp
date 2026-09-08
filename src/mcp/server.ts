@@ -2,7 +2,10 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { getTradingMode } from "../config";
 import { sha256 } from "../security/crypto";
-import { redactAccountNumbers } from "../security/redact";
+import {
+  redactAccountNumbers,
+  sanitizeUserPreferences,
+} from "../security/redact";
 import {
   getAllowedAccounts,
   getAllowedOrders,
@@ -12,21 +15,49 @@ import { reviewAction } from "../schwab/order-review";
 import type { PendingAction } from "../schwab/types";
 import { VaultClient, type AccessSession } from "../storage/vault-client";
 import type { Env, TradingMode } from "../types";
+import {
+  instrumentProjectionSchema,
+  marketSchema,
+  marketSymbolSchema,
+  moverIndexSchema,
+  normalizePriceHistoryDates,
+  optionChainInputSchema,
+  priceHistoryInputSchema,
+  quoteFieldsInputSchema,
+} from "./market-schemas";
 
 const accountHashSchema = z
   .string()
   .min(8)
   .max(128)
   .regex(/^[A-Za-z0-9_-]+$/, "Invalid account hash");
-const symbolSchema = z
+const symbolSchema = marketSymbolSchema;
+const isoDateSchema = z.string().datetime({ offset: true });
+const calendarDateSchema = z.string().date();
+const cusipSchema = z
+  .string()
+  .trim()
+  .length(9)
+  .regex(/^[A-Za-z0-9]{9}$/, "Invalid CUSIP");
+const searchTermSchema = z
   .string()
   .trim()
   .min(1)
-  .max(32)
-  .regex(/^[A-Za-z0-9.$/:_-]+$/);
-const isoDateSchema = z.string().datetime({ offset: true });
+  .max(128)
+  .refine(
+    (value) => !/[\u0000-\u001f\u007f]/u.test(value),
+    "Invalid search term",
+  );
+const priceSchema = z.union([
+  z.number().finite().nonnegative(),
+  z
+    .string()
+    .min(1)
+    .max(32)
+    .regex(/^\d+(?:\.\d+)?$/),
+]);
 
-const orderSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
+export const orderSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
   z
     .object({
       session: z.enum(["NORMAL", "AM", "PM", "SEAMLESS"]),
@@ -40,20 +71,109 @@ const orderSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
         "NEXT_END_OF_MONTH",
         "UNKNOWN",
       ]),
-      orderType: z.string().min(1).max(64),
-      orderStrategyType: z.enum(["SINGLE", "OCO", "TRIGGER"]),
-      price: z.string().max(32).optional(),
-      stopPrice: z.string().max(32).optional(),
+      orderType: z.enum([
+        "MARKET",
+        "LIMIT",
+        "STOP",
+        "STOP_LIMIT",
+        "TRAILING_STOP",
+        "CABINET",
+        "NON_MARKETABLE",
+        "MARKET_ON_CLOSE",
+        "EXERCISE",
+        "TRAILING_STOP_LIMIT",
+        "NET_DEBIT",
+        "NET_CREDIT",
+        "NET_ZERO",
+        "LIMIT_ON_CLOSE",
+      ]),
+      orderStrategyType: z.enum([
+        "SINGLE",
+        "CANCEL",
+        "RECALL",
+        "PAIR",
+        "FLATTEN",
+        "TWO_DAY_SWAP",
+        "BLAST_ALL",
+        "OCO",
+        "TRIGGER",
+      ]),
+      price: priceSchema.optional(),
+      stopPrice: priceSchema.optional(),
+      quantity: z.number().positive().finite().optional(),
       activationPrice: z.number().finite().nonnegative().optional(),
-      specialInstruction: z.string().min(1).max(64).optional(),
-      complexOrderStrategyType: z.string().min(1).max(64).optional(),
-      stopPriceLinkBasis: z.string().min(1).max(64).optional(),
-      stopPriceLinkType: z.string().min(1).max(64).optional(),
+      cancelTime: z.string().min(1).max(64).optional(),
+      releaseTime: z.string().min(1).max(64).optional(),
+      destinationLinkName: z.string().min(1).max(64).optional(),
+      specialInstruction: z
+        .enum(["ALL_OR_NONE", "DO_NOT_REDUCE", "ALL_OR_NONE_DO_NOT_REDUCE"])
+        .optional(),
+      complexOrderStrategyType: z
+        .enum([
+          "NONE",
+          "COVERED",
+          "VERTICAL",
+          "BACK_RATIO",
+          "CALENDAR",
+          "DIAGONAL",
+          "STRADDLE",
+          "STRANGLE",
+          "COLLAR_SYNTHETIC",
+          "BUTTERFLY",
+          "CONDOR",
+          "IRON_CONDOR",
+          "VERTICAL_ROLL",
+          "COLLAR_WITH_STOCK",
+          "DOUBLE_DIAGONAL",
+          "UNBALANCED_BUTTERFLY",
+          "UNBALANCED_CONDOR",
+          "UNBALANCED_IRON_CONDOR",
+          "UNBALANCED_VERTICAL_ROLL",
+          "MUTUAL_FUND_SWAP",
+          "CUSTOM",
+        ])
+        .optional(),
+      stopPriceLinkBasis: z
+        .enum([
+          "MANUAL",
+          "BASE",
+          "TRIGGER",
+          "LAST",
+          "BID",
+          "ASK",
+          "ASK_BID",
+          "MARK",
+          "AVERAGE",
+        ])
+        .optional(),
+      stopPriceLinkType: z.enum(["VALUE", "PERCENT", "TICK"]).optional(),
       stopPriceOffset: z.number().finite().optional(),
-      stopType: z.string().min(1).max(64).optional(),
-      priceLinkBasis: z.string().min(1).max(64).optional(),
-      priceLinkType: z.string().min(1).max(64).optional(),
-      taxLotMethod: z.string().min(1).max(64).optional(),
+      stopType: z.enum(["STANDARD", "BID", "ASK", "LAST", "MARK"]).optional(),
+      priceLinkBasis: z
+        .enum([
+          "MANUAL",
+          "BASE",
+          "TRIGGER",
+          "LAST",
+          "BID",
+          "ASK",
+          "ASK_BID",
+          "MARK",
+          "AVERAGE",
+        ])
+        .optional(),
+      priceLinkType: z.enum(["VALUE", "PERCENT", "TICK"]).optional(),
+      taxLotMethod: z
+        .enum([
+          "FIFO",
+          "LIFO",
+          "HIGH_COST",
+          "LOW_COST",
+          "AVERAGE_COST",
+          "SPECIFIC_LOT",
+          "LOSS_HARVESTER",
+        ])
+        .optional(),
       orderLegCollection: z
         .array(
           z
@@ -68,12 +188,47 @@ const orderSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
                 "SELL_TO_OPEN",
                 "SELL_TO_CLOSE",
                 "EXCHANGE",
+                "SELL_SHORT_EXEMPT",
               ]),
               quantity: z.number().positive().finite(),
+              orderLegType: z
+                .enum([
+                  "EQUITY",
+                  "OPTION",
+                  "INDEX",
+                  "MUTUAL_FUND",
+                  "CASH_EQUIVALENT",
+                  "FIXED_INCOME",
+                  "CURRENCY",
+                  "COLLECTIVE_INVESTMENT",
+                ])
+                .optional(),
+              legId: z.number().int().nonnegative().optional(),
+              positionEffect: z
+                .enum(["OPENING", "CLOSING", "AUTOMATIC"])
+                .optional(),
+              quantityType: z
+                .enum(["ALL_SHARES", "DOLLARS", "SHARES"])
+                .optional(),
+              divCapGains: z.enum(["REINVEST", "PAYOUT"]).optional(),
+              toSymbol: symbolSchema.optional(),
               instrument: z
                 .object({
                   symbol: symbolSchema,
-                  assetType: z.string().min(1).max(64),
+                  assetType: z.enum([
+                    "EQUITY",
+                    "MUTUAL_FUND",
+                    "OPTION",
+                    "FUTURE",
+                    "FOREX",
+                    "INDEX",
+                    "CASH_EQUIVALENT",
+                    "FIXED_INCOME",
+                    "PRODUCT",
+                    "CURRENCY",
+                    "COLLECTIVE_INVESTMENT",
+                  ]),
+                  cusip: cusipSchema.optional(),
                 })
                 .strict(),
             })
@@ -172,13 +327,13 @@ export function createSchwabMcpServer(
     "schwab_get_quotes",
     {
       description: "Get current Schwab market quotes for up to 50 symbols.",
-      inputSchema: z.object({
-        symbols: z.array(symbolSchema).min(1).max(50),
-        fields: z
-          .enum(["quote", "fundamental", "reference", "regular"])
-          .optional(),
-        indicative: z.boolean().optional(),
-      }),
+      inputSchema: z
+        .object({
+          symbols: z.array(symbolSchema).min(1).max(50),
+          fields: quoteFieldsInputSchema.optional(),
+          indicative: z.boolean().optional(),
+        })
+        .strict(),
       annotations: { readOnlyHint: true },
     },
     async ({ symbols, fields, indicative }) => {
@@ -189,8 +344,37 @@ export function createSchwabMcpServer(
           session.accessToken,
           "/marketdata/v1/quotes",
           {
-            query: { symbols: symbols.join(","), fields, indicative },
+            query: {
+              symbols: symbols.join(","),
+              fields: fields?.join(","),
+              indicative,
+            },
           },
+        ),
+      );
+    },
+  );
+
+  server.registerTool(
+    "schwab_get_quote",
+    {
+      description: "Get a detailed Schwab quote for one symbol.",
+      inputSchema: z
+        .object({
+          symbol: symbolSchema,
+          fields: quoteFieldsInputSchema.optional(),
+        })
+        .strict(),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ symbol, fields }) => {
+      const session = await vault.accessSession();
+      return result(
+        await schwabRequest<unknown>(
+          env,
+          session.accessToken,
+          `/marketdata/v1/${encodeURIComponent(symbol)}/quotes`,
+          { query: { fields: fields?.join(",") } },
         ),
       );
     },
@@ -200,19 +384,7 @@ export function createSchwabMcpServer(
     "schwab_get_price_history",
     {
       description: "Get historical price candles for a symbol.",
-      inputSchema: z.object({
-        symbol: symbolSchema,
-        periodType: z.enum(["day", "month", "year", "ytd"]).optional(),
-        period: z.number().int().positive().max(20).optional(),
-        frequencyType: z
-          .enum(["minute", "daily", "weekly", "monthly"])
-          .optional(),
-        frequency: z.number().int().positive().max(60).optional(),
-        startDate: z.number().int().nonnegative().optional(),
-        endDate: z.number().int().nonnegative().optional(),
-        needExtendedHoursData: z.boolean().optional(),
-        needPreviousClose: z.boolean().optional(),
-      }),
+      inputSchema: priceHistoryInputSchema,
       annotations: { readOnlyHint: true },
     },
     async ({ symbol, ...query }) => {
@@ -223,7 +395,7 @@ export function createSchwabMcpServer(
           session.accessToken,
           "/marketdata/v1/pricehistory",
           {
-            query: { symbol, ...query },
+            query: normalizePriceHistoryDates({ symbol, ...query }),
           },
         ),
       );
@@ -235,15 +407,7 @@ export function createSchwabMcpServer(
     {
       description:
         "Get a Schwab option chain. Narrow the date and strike range to limit output.",
-      inputSchema: z.object({
-        symbol: symbolSchema,
-        contractType: z.enum(["CALL", "PUT", "ALL"]).default("ALL"),
-        strikeCount: z.number().int().positive().max(100).default(20),
-        includeUnderlyingQuote: z.boolean().default(false),
-        strategy: z.string().max(32).optional(),
-        fromDate: z.string().date().optional(),
-        toDate: z.string().date().optional(),
-      }),
+      inputSchema: optionChainInputSchema,
       annotations: { readOnlyHint: true },
     },
     async (query) => {
@@ -256,6 +420,158 @@ export function createSchwabMcpServer(
           {
             query,
           },
+        ),
+      );
+    },
+  );
+
+  server.registerTool(
+    "schwab_get_option_expirations",
+    {
+      description: "List available option expiration dates for a symbol.",
+      inputSchema: z.object({ symbol: symbolSchema }).strict(),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ symbol }) => {
+      const session = await vault.accessSession();
+      return result(
+        await schwabRequest<unknown>(
+          env,
+          session.accessToken,
+          "/marketdata/v1/expirationchain",
+          { query: { symbol } },
+        ),
+      );
+    },
+  );
+
+  server.registerTool(
+    "schwab_get_movers",
+    {
+      description:
+        "Get the most active or largest-moving securities for an index or market.",
+      inputSchema: z
+        .object({
+          index: moverIndexSchema,
+          sort: z.enum([
+            "VOLUME",
+            "TRADES",
+            "PERCENT_CHANGE_UP",
+            "PERCENT_CHANGE_DOWN",
+          ]),
+          frequency: z
+            .union([
+              z.literal(0),
+              z.literal(1),
+              z.literal(5),
+              z.literal(10),
+              z.literal(30),
+              z.literal(60),
+            ])
+            .default(0),
+        })
+        .strict(),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ index, ...query }) => {
+      const session = await vault.accessSession();
+      return result(
+        await schwabRequest<unknown>(
+          env,
+          session.accessToken,
+          `/marketdata/v1/movers/${encodeURIComponent(index)}`,
+          { query },
+        ),
+      );
+    },
+  );
+
+  server.registerTool(
+    "schwab_get_market_hours",
+    {
+      description: "Get Schwab market hours for one or more markets.",
+      inputSchema: z
+        .object({
+          markets: z.array(marketSchema).min(1).max(5),
+          date: calendarDateSchema.optional(),
+        })
+        .strict(),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ markets, date }) => {
+      const session = await vault.accessSession();
+      return result(
+        await schwabRequest<unknown>(
+          env,
+          session.accessToken,
+          "/marketdata/v1/markets",
+          { query: { markets: markets.join(","), date } },
+        ),
+      );
+    },
+  );
+
+  server.registerTool(
+    "schwab_get_market_hours_for_market",
+    {
+      description: "Get Schwab market hours for a single market.",
+      inputSchema: z
+        .object({ market: marketSchema, date: calendarDateSchema.optional() })
+        .strict(),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ market, date }) => {
+      const session = await vault.accessSession();
+      return result(
+        await schwabRequest<unknown>(
+          env,
+          session.accessToken,
+          `/marketdata/v1/markets/${encodeURIComponent(market)}`,
+          { query: { date } },
+        ),
+      );
+    },
+  );
+
+  server.registerTool(
+    "schwab_search_instruments",
+    {
+      description: "Search Schwab instruments by symbol or description.",
+      inputSchema: z
+        .object({
+          search: searchTermSchema,
+          projection: instrumentProjectionSchema,
+        })
+        .strict(),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ search, projection }) => {
+      const session = await vault.accessSession();
+      return result(
+        await schwabRequest<unknown>(
+          env,
+          session.accessToken,
+          "/marketdata/v1/instruments",
+          { query: { symbol: search, projection } },
+        ),
+      );
+    },
+  );
+
+  server.registerTool(
+    "schwab_get_instrument_by_cusip",
+    {
+      description: "Get Schwab instrument metadata for one CUSIP.",
+      inputSchema: z.object({ cusip: cusipSchema }).strict(),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ cusip }) => {
+      const session = await vault.accessSession();
+      return result(
+        await schwabRequest<unknown>(
+          env,
+          session.accessToken,
+          `/marketdata/v1/instruments/${encodeURIComponent(cusip)}`,
         ),
       );
     },
@@ -328,6 +644,56 @@ export function createSchwabMcpServer(
             session.accessToken,
             `/trader/v1/accounts/${encodeURIComponent(accountHash)}/transactions`,
             { query },
+          ),
+        ),
+      );
+    },
+  );
+
+  server.registerTool(
+    "schwab_get_transaction",
+    {
+      description: "Get one transaction from an allowed Schwab account.",
+      inputSchema: z
+        .object({
+          accountHash: accountHashSchema,
+          transactionId: z.union([
+            z.number().int().positive().safe(),
+            z.string().min(1).max(20).regex(/^\d+$/),
+          ]),
+        })
+        .strict(),
+      annotations: { readOnlyHint: true },
+    },
+    async ({ accountHash, transactionId }) => {
+      const session = await allowedSession(vault, accountHash);
+      return result(
+        redactAccountNumbers(
+          await schwabRequest<unknown>(
+            env,
+            session.accessToken,
+            `/trader/v1/accounts/${encodeURIComponent(accountHash)}/transactions/${encodeURIComponent(String(transactionId))}`,
+          ),
+        ),
+      );
+    },
+  );
+
+  server.registerTool(
+    "schwab_get_user_preferences",
+    {
+      description:
+        "Get non-identifying Schwab market-data permissions and whether streaming is available. Account and streamer identifiers are omitted.",
+      annotations: { readOnlyHint: true },
+    },
+    async () => {
+      const session = await vault.accessSession();
+      return result(
+        sanitizeUserPreferences(
+          await schwabRequest<unknown>(
+            env,
+            session.accessToken,
+            "/trader/v1/userPreference",
           ),
         ),
       );

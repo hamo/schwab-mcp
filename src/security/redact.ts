@@ -13,3 +13,30 @@ export function redactAccountNumbers(value: unknown): unknown {
   }
   return output;
 }
+
+export function sanitizeUserPreferences(value: unknown): {
+  streamingAvailable: boolean;
+  offers: Array<{
+    level2Permissions?: boolean;
+    marketDataPermission?: string;
+  }>;
+} {
+  if (!isRecord(value)) return { streamingAvailable: false, offers: [] };
+  const streamingAvailable =
+    Array.isArray(value.streamerInfo) && value.streamerInfo.length > 0;
+  const offers = Array.isArray(value.offers)
+    ? value.offers.filter(isRecord).map((offer) => ({
+        ...(typeof offer.level2Permissions === "boolean"
+          ? { level2Permissions: offer.level2Permissions }
+          : {}),
+        ...(typeof offer.mktDataPermission === "string"
+          ? { marketDataPermission: offer.mktDataPermission }
+          : {}),
+      }))
+    : [];
+  return { streamingAvailable, offers };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
