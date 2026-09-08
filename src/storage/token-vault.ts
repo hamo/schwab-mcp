@@ -19,6 +19,8 @@ const PREPARATION_TTL_MS = 10 * 60 * 1_000;
 const MAX_FLOW_TTL_MS = 10 * 60 * 1_000;
 
 export class SchwabTokenVault extends DurableObject<Env> {
+  private sessionRefresh: Promise<void> | null = null;
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     try {
@@ -98,25 +100,20 @@ export class SchwabTokenVault extends DurableObject<Env> {
   }
 
   private async accessSession(): Promise<Response> {
-    let session = await this.loadSession();
-    if (!session)
-      return Response.json({ error: "schwab_not_connected" }, { status: 401 });
-    if (session.accessExpiresAt <= Date.now() + 120_000) {
-      let refreshed;
-      try {
-        refreshed = await refreshSchwabToken(this.env, session.refreshToken);
-      } catch (error) {
-        if (shouldForgetSchwabSession(error)) {
-          await this.ctx.storage.delete(TOKEN_KEY);
-        }
-        throw error;
+    let session: StoredSchwabSession | null = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      session = await this.loadSession();
+      if (!session) {
+        return Response.json(
+          { error: "schwab_not_connected" },
+          { status: 401 },
+        );
       }
-      session = { ...refreshed, accountHashes: session.accountHashes };
-      await this.ctx.storage.put(
-        TOKEN_KEY,
-        await encryptJson(session, this.env.TOKEN_ENCRYPTION_KEY),
-      );
+      if (session.accessExpiresAt > Date.now() + 120_000) break;
+      await this.refreshSession(session);
+      session = null;
     }
+    if (!session) throw new Error("Unable to obtain a usable Schwab session");
     const accountHashes = await filterAllowedAccountHashes(
       this.env,
       session.accountHashes,
@@ -125,6 +122,62 @@ export class SchwabTokenVault extends DurableObject<Env> {
       accessToken: session.accessToken,
       accountHashes,
     });
+  }
+
+  private async refreshSession(stale: StoredSchwabSession): Promise<void> {
+    if (this.sessionRefresh) return this.sessionRefresh;
+    const refresh = this.refreshSessionIfCurrent(stale);
+    this.sessionRefresh = refresh;
+    try {
+      await refresh;
+    } finally {
+      if (this.sessionRefresh === refresh) this.sessionRefresh = null;
+    }
+  }
+
+  private async refreshSessionIfCurrent(
+    stale: StoredSchwabSession,
+  ): Promise<void> {
+    let refreshed;
+    try {
+      refreshed = await refreshSchwabToken(this.env, stale.refreshToken);
+    } catch (error) {
+      if (shouldForgetSchwabSession(error)) {
+        const removed = await atomicTakeIf<ReturnTypeShape>(
+          this.ctx.storage,
+          TOKEN_KEY,
+          async (encrypted) =>
+            sameSession(
+              await decryptJson<StoredSchwabSession>(
+                encrypted,
+                this.env.TOKEN_ENCRYPTION_KEY,
+              ),
+              stale,
+            ),
+        );
+        if (removed === undefined) return;
+      } else {
+        const current = await this.loadSession();
+        if (!current || !sameSession(current, stale)) return;
+      }
+      throw error;
+    }
+
+    await atomicUpdateIf<ReturnTypeShape>(
+      this.ctx.storage,
+      TOKEN_KEY,
+      async (encrypted) => {
+        const current = await decryptJson<StoredSchwabSession>(
+          encrypted,
+          this.env.TOKEN_ENCRYPTION_KEY,
+        );
+        if (!sameSession(current, stale)) return undefined;
+        return encryptJson(
+          { ...refreshed, accountHashes: stale.accountHashes },
+          this.env.TOKEN_ENCRYPTION_KEY,
+        );
+      },
+    );
   }
 
   private async createPreparation(request: Request): Promise<Response> {
@@ -382,6 +435,17 @@ function isStoredSession(value: unknown): value is StoredSchwabSession {
         /^[A-Za-z0-9_-]+$/.test(hash),
     ) &&
     new Set(value.accountHashes).size === value.accountHashes.length
+  );
+}
+
+function sameSession(
+  left: StoredSchwabSession,
+  right: StoredSchwabSession,
+): boolean {
+  return (
+    left.issuedAt === right.issuedAt &&
+    left.accessToken === right.accessToken &&
+    left.refreshToken === right.refreshToken
   );
 }
 
