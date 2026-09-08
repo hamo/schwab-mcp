@@ -19,6 +19,8 @@ Application code permits only:
 - the configured `*.cloudflareaccess.com` OIDC issuer
 - Client ID Metadata Document resolution performed by Cloudflare's OAuth provider, with its strict-public-fetch compatibility flag
 
+Anonymous OAuth dynamic client registration is disabled. CIMD retrieval is the only application-level network destination whose host is selected by an OAuth client; the OAuth provider validates the document and its redirect URIs.
+
 The Schwab client rejects paths outside `/marketdata/v1/` and `/trader/v1/`. No external logo, analytics script, webhook, telemetry SDK, or API aggregation service is used by application code.
 
 Cloudflare Wrangler itself may collect its documented anonymous CLI telemetry during local development or deployment; that is not part of the deployed Worker.

@@ -1,5 +1,8 @@
 export function consentPage(input: {
   clientName: string;
+  clientId: string;
+  redirectUri: string;
+  scopes: string[];
   state: string;
   csrf: string;
   tradingEnabled: boolean;
@@ -12,6 +15,9 @@ export function consentPage(input: {
     `<main><h1>Authorize Schwab MCP</h1>
       <p><strong>${escapeHtml(input.clientName)}</strong> is requesting access.</p>
       <p>${escapeHtml(capabilities)}</p>
+      <dl><dt>Client ID</dt><dd><code>${escapeHtml(input.clientId)}</code></dd>
+      <dt>Redirect URI</dt><dd><code>${escapeHtml(input.redirectUri)}</code></dd>
+      <dt>Requested scopes</dt><dd><code>${escapeHtml(input.scopes.join(" ") || "mcp:read")}</code></dd></dl>
       <p>You will sign in through Cloudflare Access. Only the configured owner email is accepted.</p>
       <form method="post" action="/authorize">
         <input type="hidden" name="state" value="${escapeHtml(input.state)}">
@@ -42,6 +48,7 @@ export function tradeApprovalPage(input: {
         <button class="danger" type="submit">Approve this exact action</button>
       </form>
       <p>Close this page to deny. Unapproved requests expire automatically.</p></main>`,
+    { "set-cookie": csrfCookie(input.csrf) },
   );
 }
 

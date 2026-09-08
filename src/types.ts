@@ -26,6 +26,7 @@ export type OAuthEnv = Env & { OAUTH_PROVIDER: OAuthHelpers };
 export interface AuthProps extends Record<string, unknown> {
   email: string;
   subject: string;
+  scopes: string[];
 }
 
 export interface AccessIdentity {

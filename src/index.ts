@@ -19,11 +19,10 @@ function createProvider(env: Env): OAuthProvider<OAuthEnv> {
     defaultHandler,
     authorizeEndpoint: "/authorize",
     tokenEndpoint: "/oauth/token",
-    clientRegistrationEndpoint: "/oauth/register",
     clientIdMetadataDocumentEnabled: true,
     allowPlainPKCE: false,
     accessTokenTTL: 3_600,
-    refreshTokenTTL: 2_592_000,
+    refreshTokenTTL: 604_800,
     scopesSupported: scopes,
     resourceMetadata: {
       resource,

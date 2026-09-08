@@ -81,6 +81,9 @@ async function handleAuthorize(
     );
     return consentPage({
       clientName: safeClientName(client),
+      clientId: oauthRequest.clientId,
+      redirectUri: oauthRequest.redirectUri,
+      scopes: oauthRequest.scope,
       state,
       csrf,
       tradingEnabled: getTradingMode(env) === "live",
@@ -219,15 +222,18 @@ async function handleTradeApproval(
     );
     if (
       stringField(form, "csrf") !== state.csrf ||
+      readCookie(request, "__Host-schwab_mcp_csrf") !== state.csrf ||
       state.identity.email !== env.OWNER_EMAIL.trim().toLowerCase()
     ) {
       return errorPage("Trade approval was rejected", 403);
     }
     await new VaultClient(env).approvePreparation(state.preparationId);
-    return successPage(
+    const response = successPage(
       "Trade approved",
       "Return to ChatGPT and continue. The approval is one-time and applies only to the displayed action.",
     );
+    response.headers.append("set-cookie", clearCsrfCookie());
+    return response;
   }
   return new Response("Method not allowed", {
     status: 405,
@@ -242,14 +248,19 @@ async function completeMcpAuthorization(
 ): Promise<Response> {
   const allowed = new Set(["mcp:read"]);
   if (getTradingMode(env) === "live") allowed.add("mcp:trade");
-  const scope = request.scope.filter((item) => allowed.has(item));
-  if (!scope.includes("mcp:read")) scope.push("mcp:read");
+  const requested = request.scope.length === 0 ? ["mcp:read"] : request.scope;
+  const scope = requested.filter((item) => allowed.has(item));
+  if (!scope.includes("mcp:read")) {
+    throw new FlowError(
+      "The MCP client did not request the required mcp:read scope",
+    );
+  }
   const { redirectTo } = await env.OAUTH_PROVIDER.completeAuthorization({
     request,
     userId: `owner-${await sha256(identity.subject)}`,
     metadata: { owner: true },
     scope,
-    props: { email: identity.email, subject: identity.subject },
+    props: { email: identity.email, subject: identity.subject, scopes: scope },
   });
   return Response.redirect(redirectTo, 302);
 }

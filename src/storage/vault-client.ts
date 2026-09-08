@@ -35,12 +35,8 @@ export class VaultClient {
     return this.request("/access", "POST");
   }
 
-  createPreparation(input: {
-    action: PendingAction;
-    digest: string;
-    summary: string;
-  }): Promise<PreparationSummary> {
-    return this.request("/preparations", "POST", input);
+  createPreparation(action: PendingAction): Promise<PreparationSummary> {
+    return this.request("/preparations", "POST", { action });
   }
 
   getPreparation(id: string): Promise<PreparationSummary> {

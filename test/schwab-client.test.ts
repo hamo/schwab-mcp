@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { schwabRequest } from "../src/schwab/client";
+import {
+  getAllowedAccounts,
+  getAllowedOrders,
+  SchwabApiError,
+  schwabRequest,
+  shouldForgetSchwabSession,
+} from "../src/schwab/client";
 
 describe("Schwab HTTP client", () => {
   it("only calls the Schwab host and attaches the bearer token", async () => {
@@ -33,5 +39,62 @@ describe("Schwab HTTP client", () => {
       ),
     ).rejects.toThrow("outside the allowlisted API prefixes");
     expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it("uses only account-scoped endpoints for allowlisted account reads", async () => {
+    const urls: string[] = [];
+    const fetcher = vi.fn((input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : input;
+      urls.push(new URL(url).pathname);
+      return Promise.resolve(Response.json([]));
+    });
+    const session = {
+      accessToken: "token",
+      accountHashes: ["hash_one", "hash_two"],
+    };
+
+    await getAllowedAccounts(
+      { SCHWAB_ENVIRONMENT: "production" },
+      session,
+      false,
+      fetcher,
+    );
+    await getAllowedOrders(
+      { SCHWAB_ENVIRONMENT: "production" },
+      session,
+      {
+        fromEnteredTime: "2026-01-01T00:00:00Z",
+        toEnteredTime: "2026-01-02T00:00:00Z",
+      },
+      fetcher,
+    );
+
+    expect(urls).toEqual([
+      "/trader/v1/accounts/hash_one",
+      "/trader/v1/accounts/hash_two",
+      "/trader/v1/accounts/hash_one/orders",
+      "/trader/v1/accounts/hash_two/orders",
+    ]);
+    expect(urls).not.toContain("/trader/v1/accounts");
+    expect(urls).not.toContain("/trader/v1/orders");
+  });
+
+  it("forgets a session only when Schwab explicitly rejects its grant", () => {
+    expect(
+      shouldForgetSchwabSession(
+        new SchwabApiError(400, "failed", "invalid_grant"),
+      ),
+    ).toBe(true);
+    expect(
+      shouldForgetSchwabSession(
+        new SchwabApiError(401, "failed", "invalid_token"),
+      ),
+    ).toBe(true);
+    expect(
+      shouldForgetSchwabSession(new SchwabApiError(503, "unavailable")),
+    ).toBe(false);
+    expect(shouldForgetSchwabSession(new TypeError("network failed"))).toBe(
+      false,
+    );
   });
 });

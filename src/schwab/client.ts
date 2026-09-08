@@ -1,11 +1,18 @@
 import { schwabBaseUrl } from "../config";
 import { sha256 } from "../security/crypto";
+import {
+  fetchWithTimeout,
+  readJsonWithLimit,
+  readTextWithLimit,
+} from "../security/http";
 import type { Env } from "../types";
 import type { SchwabTokenResponse } from "./types";
 
 const TOKEN_PATH = "/v1/oauth/token";
 const AUTH_PATH = "/v1/oauth/authorize";
 const MAX_ERROR_BODY = 2_000;
+const MAX_TOKEN_BODY = 64 * 1_024;
+const MAX_API_BODY = 2 * 1_024 * 1_024;
 
 export interface SchwabRequestOptions {
   method?: "GET" | "POST" | "PUT" | "DELETE";
@@ -70,18 +77,28 @@ async function requestToken(
   const credentials = btoa(
     `${env.SCHWAB_CLIENT_ID}:${env.SCHWAB_CLIENT_SECRET}`,
   );
-  const response = await fetch(new URL(TOKEN_PATH, schwabBaseUrl(env)), {
-    method: "POST",
-    headers: {
-      authorization: `Basic ${credentials}`,
-      "content-type": "application/x-www-form-urlencoded",
-      accept: "application/json",
+  const response = await fetchWithTimeout(
+    new URL(TOKEN_PATH, schwabBaseUrl(env)),
+    {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${credentials}`,
+        "content-type": "application/x-www-form-urlencoded",
+        accept: "application/json",
+      },
+      body,
     },
-    body,
-  });
-  const raw = await readJson(response);
-  if (!response.ok)
-    throw new SchwabApiError(response.status, "Schwab token request failed");
+  );
+  const raw = await readJsonWithLimit(response, MAX_TOKEN_BODY);
+  if (!response.ok) {
+    const code =
+      isRecord(raw) && typeof raw.error === "string" ? raw.error : undefined;
+    throw new SchwabApiError(
+      response.status,
+      "Schwab token request failed",
+      code,
+    );
+  }
   if (
     !isRecord(raw) ||
     typeof raw.access_token !== "string" ||
@@ -126,15 +143,19 @@ export async function schwabRequest<T>(
   });
   if (options.body !== undefined)
     headers.set("content-type", "application/json");
-  const response = await (options.fetcher ?? fetch)(url, {
-    method: options.method ?? "GET",
-    headers,
-    ...(options.body !== undefined
-      ? { body: JSON.stringify(options.body) }
-      : {}),
-  });
+  const response = await fetchWithTimeout(
+    url,
+    {
+      method: options.method ?? "GET",
+      headers,
+      ...(options.body !== undefined
+        ? { body: JSON.stringify(options.body) }
+        : {}),
+    },
+    options.fetcher ?? fetch,
+  );
   if (!response.ok) {
-    const detail = (await response.text()).slice(0, MAX_ERROR_BODY);
+    const detail = await readTextWithLimit(response, MAX_ERROR_BODY);
     throw new SchwabApiError(response.status, safeErrorDetail(detail));
   }
   if (
@@ -145,7 +166,7 @@ export async function schwabRequest<T>(
   }
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.includes("application/json"))
-    return (await readJson(response)) as T;
+    return (await readJsonWithLimit(response, MAX_API_BODY)) as T;
   return {
     ok: true,
     status: response.status,
@@ -180,6 +201,52 @@ export async function selectAllowedAccountHashes(
   return filterAllowedAccountHashes(env, hashes);
 }
 
+export interface AllowedAccountSession {
+  accessToken: string;
+  accountHashes: string[];
+}
+
+export async function getAllowedAccounts(
+  env: Pick<Env, "SCHWAB_ENVIRONMENT">,
+  session: AllowedAccountSession,
+  includePositions: boolean,
+  fetcher?: typeof fetch,
+): Promise<Array<{ accountHash: string; account: unknown }>> {
+  return Promise.all(
+    session.accountHashes.map(async (accountHash) => ({
+      accountHash,
+      account: await schwabRequest<unknown>(
+        env,
+        session.accessToken,
+        `/trader/v1/accounts/${encodeURIComponent(accountHash)}`,
+        {
+          query: { fields: includePositions ? "positions" : undefined },
+          ...(fetcher ? { fetcher } : {}),
+        },
+      ),
+    })),
+  );
+}
+
+export async function getAllowedOrders(
+  env: Pick<Env, "SCHWAB_ENVIRONMENT">,
+  session: AllowedAccountSession,
+  query: Record<string, string | number | boolean | undefined>,
+  fetcher?: typeof fetch,
+): Promise<Array<{ accountHash: string; orders: unknown }>> {
+  return Promise.all(
+    session.accountHashes.map(async (accountHash) => ({
+      accountHash,
+      orders: await schwabRequest<unknown>(
+        env,
+        session.accessToken,
+        `/trader/v1/accounts/${encodeURIComponent(accountHash)}/orders`,
+        { query, ...(fetcher ? { fetcher } : {}) },
+      ),
+    })),
+  );
+}
+
 export async function filterAllowedAccountHashes(
   env: Pick<Env, "OWNER_ACCOUNT_FINGERPRINTS">,
   hashes: string[],
@@ -204,10 +271,19 @@ export class SchwabApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly code?: string,
   ) {
     super(message);
     this.name = "SchwabApiError";
   }
+}
+
+export function shouldForgetSchwabSession(error: unknown): boolean {
+  return (
+    error instanceof SchwabApiError &&
+    (error.status === 400 || error.status === 401) &&
+    ["invalid_grant", "invalid_token"].includes(error.code ?? "")
+  );
 }
 
 function safeErrorDetail(raw: string): string {
@@ -221,10 +297,6 @@ function safeErrorDetail(raw: string): string {
   } catch {
     return "Schwab API request failed";
   }
-}
-
-async function readJson(response: Response): Promise<unknown> {
-  return JSON.parse(await response.text()) as unknown;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

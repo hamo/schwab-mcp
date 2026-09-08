@@ -20,17 +20,19 @@ Cloudflare Worker ── Cloudflare Access OIDC ── exact owner email
                               Schwab Trader/Market APIs
 ```
 
-The repository contains no credentials. The Worker checks the configured email after cryptographically verifying the Cloudflare Access ID token, including its signature, issuer, audience, nonce, and lifetime. Schwab tokens are encrypted with AES-256-GCM before Durable Object storage. Raw account numbers are redacted from MCP responses.
+The repository contains no credentials. The Worker checks the configured email after cryptographically verifying the Cloudflare Access ID token, including its signature, issuer, audience, authorized party, nonce, and lifetime. Schwab tokens are encrypted with AES-256-GCM before Durable Object storage. Raw account numbers are redacted from MCP responses.
+
+OAuth clients must use a Client ID Metadata Document (CIMD). Anonymous dynamic client registration is intentionally disabled, so arbitrary visitors cannot create persistent OAuth clients in the deployment. The consent page displays the client ID, exact redirect URI, and requested scopes before authentication. MCP access tokens last one hour and refresh tokens last seven days.
 
 Cloudflare Access must also have an `Allow` policy containing only the owner's exact email. The code-level email check is a second independent guard.
 
 ## Trading modes
 
-| Mode       | Preparation tools | Schwab write requests                |
-| ---------- | ----------------- | ------------------------------------ |
-| `disabled` | Not registered    | Impossible through MCP               |
-| `preview`  | Registered        | Never sent                           |
-| `live`     | Registered        | Only after one-time browser approval |
+| Mode       | Preparation tools          | Schwab write requests                |
+| ---------- | -------------------------- | ------------------------------------ |
+| `disabled` | Not registered             | Impossible through MCP               |
+| `preview`  | Registered                 | Never sent                           |
+| `live`     | Requires `mcp:trade` scope | Only after one-time browser approval |
 
 The checked-in default is `disabled`. In live mode, preparing an order creates a ten-minute approval URL. Opening it requires a fresh Cloudflare Access login; the page shows the exact action and digest. Approval is one-time. The execution tool remains guarded by a second runtime mode check.
 
@@ -42,7 +44,7 @@ Use separate Worker names, KV namespaces, and Schwab applications for read-only,
 
 ## Implemented tools
 
-Read-only tools cover connection status, account hashes/fingerprints, accounts and positions, quotes, price history, option chains, orders, individual orders, and transactions.
+Read-only tools cover connection status, account hashes/fingerprints, accounts and positions, quotes, price history, option chains, orders, individual orders, and transactions. Cross-account reads are implemented as separate account-scoped Schwab requests for only the hashes admitted by the deployment allowlist.
 
 When enabled, trading tools prepare place, replace, and cancel actions. Only a live deployment registers `schwab_execute_approved_order`.
 
@@ -110,7 +112,7 @@ These steps work with Cloudflare's free tier, including SQLite-backed Durable Ob
    npm run deploy
    ```
 
-7. Add `https://<worker-hostname>/mcp` as a remote MCP server in ChatGPT/Codex. The first authorization runs through both Cloudflare Access and Schwab. The MCP endpoint uses Streamable HTTP; do not append `/sse`.
+7. Add `https://<worker-hostname>/mcp` as a remote MCP server in ChatGPT/Codex. The client must support Client ID Metadata Documents. The first authorization runs through both Cloudflare Access and Schwab. The MCP endpoint uses Streamable HTTP; do not append `/sse`.
 
 ## Optional account allowlist
 

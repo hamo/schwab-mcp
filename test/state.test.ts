@@ -46,4 +46,11 @@ describe("OAuth flow state", () => {
       consumeState(kv, token, "consent", "state-secret"),
     ).rejects.toThrow("already used");
   });
+
+  it("rejects oversized or malformed state before reading storage", async () => {
+    const kv = new FakeKv() as unknown as KVNamespace;
+    await expect(
+      consumeState(kv, `not-a-uuid.${"a".repeat(43)}`, "consent", "secret"),
+    ).rejects.toThrow("Invalid state");
+  });
 });

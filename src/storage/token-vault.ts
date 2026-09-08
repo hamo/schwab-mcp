@@ -3,7 +3,9 @@ import { decryptJson, encryptJson } from "../security/crypto";
 import {
   filterAllowedAccountHashes,
   refreshSchwabToken,
+  shouldForgetSchwabSession,
 } from "../schwab/client";
+import { reviewAction } from "../schwab/order-review";
 import type {
   PendingAction,
   PendingTrade,
@@ -92,7 +94,9 @@ export class SchwabTokenVault extends DurableObject<Env> {
       try {
         refreshed = await refreshSchwabToken(this.env, session.refreshToken);
       } catch (error) {
-        await this.ctx.storage.delete(TOKEN_KEY);
+        if (shouldForgetSchwabSession(error)) {
+          await this.ctx.storage.delete(TOKEN_KEY);
+        }
         throw error;
       }
       session = { ...refreshed, accountHashes: session.accountHashes };
@@ -123,11 +127,12 @@ export class SchwabTokenVault extends DurableObject<Env> {
     if (!session || !accountHashes.includes(input.action.accountHash)) {
       return Response.json({ error: "account_not_allowed" }, { status: 403 });
     }
+    const reviewed = await reviewAction(input.action);
     const createdAt = Date.now();
     const pending: PendingTrade = {
       id: crypto.randomUUID(),
-      digest: input.digest,
-      summary: input.summary.slice(0, 4_000),
+      digest: reviewed.digest,
+      summary: reviewed.summary,
       action: input.action,
       createdAt,
       expiresAt: createdAt + PREPARATION_TTL_MS,
@@ -259,7 +264,16 @@ function isStoredSession(value: unknown): value is StoredSchwabSession {
     typeof value.accessExpiresAt === "number" &&
     typeof value.issuedAt === "number" &&
     Array.isArray(value.accountHashes) &&
-    value.accountHashes.every((hash) => typeof hash === "string")
+    value.accountHashes.length > 0 &&
+    value.accountHashes.length <= 20 &&
+    value.accountHashes.every(
+      (hash) =>
+        typeof hash === "string" &&
+        hash.length >= 8 &&
+        hash.length <= 128 &&
+        /^[A-Za-z0-9_-]+$/.test(hash),
+    ) &&
+    new Set(value.accountHashes).size === value.accountHashes.length
   );
 }
 
@@ -269,15 +283,8 @@ async function readJson(request: Request): Promise<unknown> {
 
 function isPreparationInput(value: unknown): value is {
   action: PendingAction;
-  digest: string;
-  summary: string;
 } {
-  return (
-    isRecord(value) &&
-    isPendingAction(value.action) &&
-    typeof value.digest === "string" &&
-    typeof value.summary === "string"
-  );
+  return isRecord(value) && isPendingAction(value.action);
 }
 
 function isPendingAction(value: unknown): value is PendingAction {

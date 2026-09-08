@@ -64,6 +64,13 @@ export async function consumeState<T extends StoredState["kind"]>(
   signingKey: string,
 ): Promise<Extract<StoredState, { kind: T }>> {
   if (!token) throw new FlowError("Missing state");
+  if (
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.[A-Za-z0-9_-]{43}$/i.test(
+      token,
+    )
+  ) {
+    throw new FlowError("Invalid state");
+  }
   const separator = token.lastIndexOf(".");
   if (separator < 1) throw new FlowError("Invalid state");
   const id = token.slice(0, separator);

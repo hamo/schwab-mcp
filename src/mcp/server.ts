@@ -1,9 +1,14 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { getTradingMode } from "../config";
-import { canonicalJson, sha256 } from "../security/crypto";
+import { sha256 } from "../security/crypto";
 import { redactAccountNumbers } from "../security/redact";
-import { schwabRequest } from "../schwab/client";
+import {
+  getAllowedAccounts,
+  getAllowedOrders,
+  schwabRequest,
+} from "../schwab/client";
+import { reviewAction } from "../schwab/order-review";
 import type { PendingAction } from "../schwab/types";
 import { VaultClient, type AccessSession } from "../storage/vault-client";
 import type { Env, TradingMode } from "../types";
@@ -21,54 +26,77 @@ const symbolSchema = z
   .regex(/^[A-Za-z0-9.$/:_-]+$/);
 const isoDateSchema = z.string().datetime({ offset: true });
 
-const orderSchema = z
-  .object({
-    session: z.enum(["NORMAL", "AM", "PM", "SEAMLESS"]),
-    duration: z.enum([
-      "DAY",
-      "GOOD_TILL_CANCEL",
-      "FILL_OR_KILL",
-      "IMMEDIATE_OR_CANCEL",
-      "END_OF_WEEK",
-      "END_OF_MONTH",
-      "NEXT_END_OF_MONTH",
-      "UNKNOWN",
-    ]),
-    orderType: z.string().min(1).max(64),
-    orderStrategyType: z.enum(["SINGLE", "OCO", "TRIGGER"]),
-    price: z.string().max(32).optional(),
-    stopPrice: z.string().max(32).optional(),
-    orderLegCollection: z
-      .array(
-        z
-          .object({
-            instruction: z.enum([
-              "BUY",
-              "SELL",
-              "BUY_TO_COVER",
-              "SELL_SHORT",
-              "BUY_TO_OPEN",
-              "BUY_TO_CLOSE",
-              "SELL_TO_OPEN",
-              "SELL_TO_CLOSE",
-              "EXCHANGE",
-            ]),
-            quantity: z.number().positive().finite(),
-            instrument: z
-              .object({
-                symbol: symbolSchema,
-                assetType: z.string().min(1).max(64),
-              })
-              .passthrough(),
-          })
-          .passthrough(),
-      )
-      .min(1)
-      .max(20),
-  })
-  .passthrough();
+const orderSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
+  z
+    .object({
+      session: z.enum(["NORMAL", "AM", "PM", "SEAMLESS"]),
+      duration: z.enum([
+        "DAY",
+        "GOOD_TILL_CANCEL",
+        "FILL_OR_KILL",
+        "IMMEDIATE_OR_CANCEL",
+        "END_OF_WEEK",
+        "END_OF_MONTH",
+        "NEXT_END_OF_MONTH",
+        "UNKNOWN",
+      ]),
+      orderType: z.string().min(1).max(64),
+      orderStrategyType: z.enum(["SINGLE", "OCO", "TRIGGER"]),
+      price: z.string().max(32).optional(),
+      stopPrice: z.string().max(32).optional(),
+      activationPrice: z.number().finite().nonnegative().optional(),
+      specialInstruction: z.string().min(1).max(64).optional(),
+      complexOrderStrategyType: z.string().min(1).max(64).optional(),
+      stopPriceLinkBasis: z.string().min(1).max(64).optional(),
+      stopPriceLinkType: z.string().min(1).max(64).optional(),
+      stopPriceOffset: z.number().finite().optional(),
+      stopType: z.string().min(1).max(64).optional(),
+      priceLinkBasis: z.string().min(1).max(64).optional(),
+      priceLinkType: z.string().min(1).max(64).optional(),
+      taxLotMethod: z.string().min(1).max(64).optional(),
+      orderLegCollection: z
+        .array(
+          z
+            .object({
+              instruction: z.enum([
+                "BUY",
+                "SELL",
+                "BUY_TO_COVER",
+                "SELL_SHORT",
+                "BUY_TO_OPEN",
+                "BUY_TO_CLOSE",
+                "SELL_TO_OPEN",
+                "SELL_TO_CLOSE",
+                "EXCHANGE",
+              ]),
+              quantity: z.number().positive().finite(),
+              instrument: z
+                .object({
+                  symbol: symbolSchema,
+                  assetType: z.string().min(1).max(64),
+                })
+                .strict(),
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(20)
+        .optional(),
+      childOrderStrategies: z.array(orderSchema).min(1).max(10).optional(),
+    })
+    .strict()
+    .refine(
+      (order) =>
+        order.orderLegCollection !== undefined ||
+        order.childOrderStrategies !== undefined,
+      "Order must contain legs or child strategies",
+    ),
+);
 
-export function createSchwabMcpServer(env: Env): McpServer {
+export function createSchwabMcpServer(
+  env: Env,
+  grantedScopes: string[],
+): McpServer {
   const server = new McpServer({ name: "schwab-mcp", version: "0.1.0" });
   const vault = new VaultClient(env);
   const mode = getTradingMode(env);
@@ -113,14 +141,7 @@ export function createSchwabMcpServer(env: Env): McpServer {
     },
     async ({ includePositions }) => {
       const session = await vault.accessSession();
-      const data = await schwabRequest<unknown>(
-        env,
-        session.accessToken,
-        "/trader/v1/accounts",
-        {
-          query: { fields: includePositions ? "positions" : undefined },
-        },
-      );
+      const data = await getAllowedAccounts(env, session, includePositions);
       return result(redactAccountNumbers(data));
     },
   );
@@ -256,14 +277,7 @@ export function createSchwabMcpServer(env: Env): McpServer {
     async (query) => {
       const session = await vault.accessSession();
       return result(
-        redactAccountNumbers(
-          await schwabRequest<unknown>(
-            env,
-            session.accessToken,
-            "/trader/v1/orders",
-            { query },
-          ),
-        ),
+        redactAccountNumbers(await getAllowedOrders(env, session, query)),
       );
     },
   );
@@ -320,7 +334,7 @@ export function createSchwabMcpServer(env: Env): McpServer {
     },
   );
 
-  const tradePolicy = tradeToolPolicy(mode);
+  const tradePolicy = tradeToolPolicy(mode, grantedScopes);
   if (tradePolicy.preparation) {
     registerTradePreparationTools(
       server,
@@ -333,13 +347,18 @@ export function createSchwabMcpServer(env: Env): McpServer {
   return server;
 }
 
-export function tradeToolPolicy(mode: TradingMode): {
+export function tradeToolPolicy(
+  mode: TradingMode,
+  grantedScopes: string[],
+): {
   preparation: boolean;
   execution: boolean;
 } {
   return {
-    preparation: mode === "preview" || mode === "live",
-    execution: mode === "live",
+    preparation:
+      mode === "preview" ||
+      (mode === "live" && grantedScopes.includes("mcp:trade")),
+    execution: mode === "live" && grantedScopes.includes("mcp:trade"),
   };
 }
 
@@ -358,7 +377,7 @@ function registerTradePreparationTools(
         accountHash: accountHashSchema,
         order: orderSchema,
       }),
-      annotations: { readOnlyHint: true },
+      annotations: { readOnlyHint: mode === "preview" },
     },
     async ({ accountHash, order }) =>
       prepareTrade(env, vault, mode, { kind: "place", accountHash, order }),
@@ -372,7 +391,7 @@ function registerTradePreparationTools(
         orderId: z.string().min(1).max(64),
         order: orderSchema,
       }),
-      annotations: { readOnlyHint: true },
+      annotations: { readOnlyHint: mode === "preview" },
     },
     async ({ accountHash, orderId, order }) =>
       prepareTrade(env, vault, mode, {
@@ -390,7 +409,7 @@ function registerTradePreparationTools(
         accountHash: accountHashSchema,
         orderId: z.string().min(1).max(64),
       }),
-      annotations: { readOnlyHint: true },
+      annotations: { readOnlyHint: mode === "preview" },
     },
     async ({ accountHash, orderId }) =>
       prepareTrade(env, vault, mode, { kind: "cancel", accountHash, orderId }),
@@ -456,14 +475,11 @@ async function prepareTrade(
   action: PendingAction,
 ) {
   await allowedSession(vault, action.accountHash);
-  const canonical = canonicalJson(action);
-  if (canonical.length > 64_000) throw new Error("Order payload is too large");
-  const digest = await sha256(canonical);
-  const summary = JSON.stringify(action, null, 2);
+  const { digest, summary } = await reviewAction(action);
   if (mode === "preview") {
     return result({ mode, digest, summary, executable: false });
   }
-  const pending = await vault.createPreparation({ action, digest, summary });
+  const pending = await vault.createPreparation(action);
   const origin = new URL(env.MCP_RESOURCE_URL).origin;
   return result({
     mode,

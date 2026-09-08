@@ -1,6 +1,7 @@
 import type { AuthRequest } from "@cloudflare/workers-oauth-provider";
 import { accessOidcIssuer } from "../config";
 import { fromBase64Url, toBase64Url, utf8 } from "../security/encoding";
+import { fetchWithTimeout, readJsonWithLimit } from "../security/http";
 import type { AccessIdentity, Env } from "../types";
 import {
   createState,
@@ -30,7 +31,11 @@ interface JwtClaims {
   nonce?: string;
   email: string;
   name?: string;
+  azp?: string;
 }
+
+const MAX_OIDC_BODY = 64 * 1_024;
+const MAX_JWT_PART_LENGTH = 16 * 1_024;
 
 export async function redirectToAccessForMcp(
   request: Request,
@@ -109,7 +114,7 @@ export async function exchangeAccessCode(
     redirect_uri: new URL("/callback", request.url).href,
     code_verifier: codeVerifier,
   });
-  const response = await fetch(`${accessOidcIssuer(env)}/token`, {
+  const response = await fetchWithTimeout(`${accessOidcIssuer(env)}/token`, {
     method: "POST",
     headers: {
       "content-type": "application/x-www-form-urlencoded",
@@ -117,7 +122,7 @@ export async function exchangeAccessCode(
     },
     body,
   });
-  const result = await readJson(response);
+  const result = await readJsonWithLimit(response, MAX_OIDC_BODY);
   if (!response.ok || !isAccessTokens(result)) {
     throw new Error(
       `Cloudflare Access token exchange failed (${response.status})`,
@@ -141,8 +146,13 @@ export async function verifyAccessIdentity(
   ) {
     throw new Error("Invalid Cloudflare Access ID token");
   }
-  const header = parsePart<JwtHeader>(encodedHeader);
-  const claims = parsePart<JwtClaims>(encodedPayload);
+  const rawHeader = parsePart(encodedHeader);
+  const rawClaims = parsePart(encodedPayload);
+  if (!isJwtHeader(rawHeader) || !isJwtClaims(rawClaims)) {
+    throw new Error("Invalid Cloudflare Access ID token claims");
+  }
+  const header = rawHeader;
+  const claims = rawClaims;
   if (
     header.alg !== "RS256" ||
     !header.kid ||
@@ -151,12 +161,12 @@ export async function verifyAccessIdentity(
     throw new Error("Unsupported Cloudflare Access ID token header");
   }
 
-  const jwksResponse = await fetch(`${accessOidcIssuer(env)}/jwks`, {
+  const jwksResponse = await fetchWithTimeout(`${accessOidcIssuer(env)}/jwks`, {
     headers: { accept: "application/json" },
   });
   if (!jwksResponse.ok)
     throw new Error("Unable to fetch Cloudflare Access signing keys");
-  const jwks = await readJson(jwksResponse);
+  const jwks = await readJsonWithLimit(jwksResponse, MAX_OIDC_BODY);
   if (!isJwks(jwks)) throw new Error("Invalid Cloudflare Access signing keys");
   const jwk = jwks.keys.find((candidate) => candidate.kid === header.kid);
   if (!jwk || jwk.kty !== "RSA")
@@ -183,6 +193,8 @@ export async function verifyAccessIdentity(
   if (
     claims.iss !== accessOidcIssuer(env) ||
     !audience.includes(env.ACCESS_CLIENT_ID) ||
+    (audience.length > 1 && claims.azp !== env.ACCESS_CLIENT_ID) ||
+    (claims.azp !== undefined && claims.azp !== env.ACCESS_CLIENT_ID) ||
     claims.exp <= now - 60 ||
     claims.iat > now + 60 ||
     (claims.nbf !== undefined && claims.nbf > now + 60) ||
@@ -208,16 +220,16 @@ async function createPkce(): Promise<{ verifier: string; challenge: string }> {
   return { verifier, challenge: toBase64Url(digest) };
 }
 
-function parsePart<T>(encoded: string): T {
+function parsePart(encoded: string): unknown {
+  if (encoded.length > MAX_JWT_PART_LENGTH)
+    throw new Error("Invalid Cloudflare Access ID token encoding");
   try {
-    return JSON.parse(new TextDecoder().decode(fromBase64Url(encoded))) as T;
+    return JSON.parse(
+      new TextDecoder().decode(fromBase64Url(encoded)),
+    ) as unknown;
   } catch {
     throw new Error("Invalid Cloudflare Access ID token encoding");
   }
-}
-
-async function readJson(response: Response): Promise<unknown> {
-  return JSON.parse(await response.text()) as unknown;
 }
 
 function isAccessTokens(value: unknown): value is AccessTokens {
@@ -225,6 +237,37 @@ function isAccessTokens(value: unknown): value is AccessTokens {
     isRecord(value) &&
     typeof value.access_token === "string" &&
     typeof value.id_token === "string"
+  );
+}
+
+function isJwtHeader(value: unknown): value is JwtHeader {
+  return (
+    isRecord(value) &&
+    typeof value.alg === "string" &&
+    typeof value.kid === "string" &&
+    (value.typ === undefined || typeof value.typ === "string")
+  );
+}
+
+function isJwtClaims(value: unknown): value is JwtClaims {
+  return (
+    isRecord(value) &&
+    typeof value.iss === "string" &&
+    typeof value.sub === "string" &&
+    (typeof value.aud === "string" ||
+      (Array.isArray(value.aud) &&
+        value.aud.length > 0 &&
+        value.aud.every((audience) => typeof audience === "string"))) &&
+    typeof value.exp === "number" &&
+    Number.isFinite(value.exp) &&
+    typeof value.iat === "number" &&
+    Number.isFinite(value.iat) &&
+    (value.nbf === undefined ||
+      (typeof value.nbf === "number" && Number.isFinite(value.nbf))) &&
+    (value.nonce === undefined || typeof value.nonce === "string") &&
+    typeof value.email === "string" &&
+    (value.name === undefined || typeof value.name === "string") &&
+    (value.azp === undefined || typeof value.azp === "string")
   );
 }
 

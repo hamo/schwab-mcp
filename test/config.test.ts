@@ -9,15 +9,19 @@ describe("trading mode fail-closed behavior", () => {
   });
 
   it("never exposes write tools in a disabled deployment", () => {
-    expect(tradeToolPolicy("disabled")).toEqual({
+    expect(tradeToolPolicy("disabled", ["mcp:read", "mcp:trade"])).toEqual({
       preparation: false,
       execution: false,
     });
-    expect(tradeToolPolicy("preview")).toEqual({
+    expect(tradeToolPolicy("preview", ["mcp:read"])).toEqual({
       preparation: true,
       execution: false,
     });
-    expect(tradeToolPolicy("live")).toEqual({
+    expect(tradeToolPolicy("live", ["mcp:read"])).toEqual({
+      preparation: false,
+      execution: false,
+    });
+    expect(tradeToolPolicy("live", ["mcp:read", "mcp:trade"])).toEqual({
       preparation: true,
       execution: true,
     });
