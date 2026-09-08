@@ -20,4 +20,9 @@
     "bindings": [{ "name": "TOKEN_VAULT", "class_name": "SchwabTokenVault" }],
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SchwabTokenVault"] }],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "redact_query_string": true,
+  },
 }

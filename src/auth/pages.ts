@@ -1,3 +1,5 @@
+import { makeFormattingCharactersVisible } from "../security/display";
+
 export function consentPage(input: {
   clientName: string;
   clientId: string;
@@ -111,7 +113,7 @@ function htmlPage(
 }
 
 function escapeHtml(value: string): string {
-  return value
+  return makeFormattingCharactersVisible(value)
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")

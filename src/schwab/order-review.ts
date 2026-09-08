@@ -1,4 +1,5 @@
 import { canonicalJson, sha256 } from "../security/crypto";
+import { makeFormattingCharactersVisible } from "../security/display";
 import { utf8 } from "../security/encoding";
 import type { PendingAction } from "./types";
 
@@ -20,6 +21,6 @@ export async function reviewAction(
   }
   return {
     digest: await sha256(canonical),
-    summary: JSON.stringify(action, null, 2),
+    summary: makeFormattingCharactersVisible(JSON.stringify(action, null, 2)),
   };
 }

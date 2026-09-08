@@ -30,6 +30,10 @@ OAuth dynamic client registration is disabled. Client ID Metadata Documents are 
 
 `TRADING_MODE=disabled` is the safe default and omits Schwab write tools from MCP discovery. `preview` exposes preparation only. `live` additionally requires the granted `mcp:trade` OAuth scope and a separate, expiring browser approval for the complete exact action digest before execution. Approval and execution transitions are atomic, and an approved action can be consumed only once. Actions too large to display in full are rejected.
 
+The approval page renders Unicode formatting controls as visible escape
+sequences so bidirectional or zero-width characters cannot visually disguise
+the action being approved.
+
 Approval prevents an MCP client from silently executing a newly prepared action, but it does not verify that an order is financially suitable. A network interruption during order submission can leave the outcome uncertain. Inspect Schwab's order history before retrying.
 
 Use a separate Worker, KV namespace, Durable Object namespace, encryption key, and preferably Schwab application for a live deployment. Do not change a read-only Worker in place to live mode.
@@ -37,3 +41,9 @@ Use a separate Worker, KV namespace, Durable Object namespace, encryption key, a
 ## Logging
 
 The Worker does not intentionally log tokens, order payloads, account hashes, or upstream error bodies. Keep Cloudflare log access restricted. Review any new logging before deployment.
+
+All checked-in deployment configurations enable Cloudflare's
+`redact_query_string` setting. Keep it enabled: the Access and Schwab OAuth
+callbacks carry short-lived authorization codes and signed state in their query
+strings, and trade-approval links carry preparation identifiers. Disabling query
+redaction would copy those values into invocation logs.

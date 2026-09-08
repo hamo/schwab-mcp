@@ -26,4 +26,16 @@ describe("trade approval review", () => {
       }),
     ).rejects.toThrow("approval limit");
   });
+
+  it("renders invisible formatting characters as explicit escapes", async () => {
+    const reviewed = await reviewAction({
+      kind: "place",
+      accountHash: "account_hash",
+      order: { destinationLinkName: "route\u202eABC\u2066" },
+    });
+
+    expect(reviewed.summary).toContain("route\\u202eABC\\u2066");
+    expect(reviewed.summary).not.toContain("\u202e");
+    expect(reviewed.summary).not.toContain("\u2066");
+  });
 });
