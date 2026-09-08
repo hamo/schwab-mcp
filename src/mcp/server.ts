@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { getTradingMode } from "../config";
-import { sha256 } from "../security/crypto";
+import { canonicalJson, sha256 } from "../security/crypto";
 import {
   redactAccountNumbers,
   sanitizeUserPreferences,
@@ -70,6 +70,12 @@ const priceSchema = z.union([
     .max(32)
     .regex(/^\d+(?:\.\d+)?$/),
 ]);
+export const schwabIdSchema = z
+  .union([
+    z.number().int().positive().safe(),
+    z.string().min(1).max(20).regex(/^\d+$/),
+  ])
+  .transform((value) => String(value));
 const outputPaginationShape = {
   outputMode: z
     .enum(["paged", "raw"])
@@ -125,43 +131,37 @@ export const transactionsQuerySchema = z
 export const orderSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
   z
     .object({
-      session: z.enum(["NORMAL", "AM", "PM", "SEAMLESS"]),
-      duration: z.enum([
-        "DAY",
-        "GOOD_TILL_CANCEL",
-        "FILL_OR_KILL",
-        "IMMEDIATE_OR_CANCEL",
-        "END_OF_WEEK",
-        "END_OF_MONTH",
-        "NEXT_END_OF_MONTH",
-      ]),
-      orderType: z.enum([
-        "MARKET",
-        "LIMIT",
-        "STOP",
-        "STOP_LIMIT",
-        "TRAILING_STOP",
-        "CABINET",
-        "NON_MARKETABLE",
-        "MARKET_ON_CLOSE",
-        "EXERCISE",
-        "TRAILING_STOP_LIMIT",
-        "NET_DEBIT",
-        "NET_CREDIT",
-        "NET_ZERO",
-        "LIMIT_ON_CLOSE",
-      ]),
-      orderStrategyType: z.enum([
-        "SINGLE",
-        "CANCEL",
-        "RECALL",
-        "PAIR",
-        "FLATTEN",
-        "TWO_DAY_SWAP",
-        "BLAST_ALL",
-        "OCO",
-        "TRIGGER",
-      ]),
+      session: z.enum(["NORMAL", "AM", "PM", "SEAMLESS"]).optional(),
+      duration: z
+        .enum([
+          "DAY",
+          "GOOD_TILL_CANCEL",
+          "FILL_OR_KILL",
+          "IMMEDIATE_OR_CANCEL",
+          "END_OF_WEEK",
+          "END_OF_MONTH",
+          "NEXT_END_OF_MONTH",
+        ])
+        .optional(),
+      orderType: z
+        .enum([
+          "MARKET",
+          "LIMIT",
+          "STOP",
+          "STOP_LIMIT",
+          "TRAILING_STOP",
+          "CABINET",
+          "NON_MARKETABLE",
+          "MARKET_ON_CLOSE",
+          "EXERCISE",
+          "TRAILING_STOP_LIMIT",
+          "NET_DEBIT",
+          "NET_CREDIT",
+          "NET_ZERO",
+          "LIMIT_ON_CLOSE",
+        ])
+        .optional(),
+      orderStrategyType: z.enum(["SINGLE", "OCO", "TRIGGER"]),
       price: priceSchema.optional(),
       stopPrice: priceSchema.optional(),
       quantity: z.number().positive().finite().optional(),
@@ -305,16 +305,68 @@ export const orderSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
     })
     .strict()
     .superRefine((order, context) => {
+      if (order.orderStrategyType === "OCO") {
+        if (order.childOrderStrategies?.length !== 2) {
+          context.addIssue({
+            code: "custom",
+            path: ["childOrderStrategies"],
+            message: "OCO orders must contain exactly two child strategies",
+          });
+        }
+        const containerFields = new Set([
+          "orderStrategyType",
+          "childOrderStrategies",
+        ]);
+        for (const field of Object.keys(order)) {
+          if (!containerFields.has(field)) {
+            context.addIssue({
+              code: "custom",
+              path: [field],
+              message: `${field} is not allowed on an OCO container`,
+            });
+          }
+        }
+        return;
+      }
+
+      for (const field of ["session", "duration", "orderType"] as const) {
+        if (order[field] === undefined) {
+          context.addIssue({
+            code: "custom",
+            path: [field],
+            message: `${field} is required for ${order.orderStrategyType} orders`,
+          });
+        }
+      }
+      if (order.orderLegCollection === undefined) {
+        context.addIssue({
+          code: "custom",
+          path: ["orderLegCollection"],
+          message: `${order.orderStrategyType} orders must contain order legs`,
+        });
+      }
       if (
-        order.orderLegCollection === undefined &&
+        order.orderStrategyType === "SINGLE" &&
+        order.childOrderStrategies !== undefined
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["childOrderStrategies"],
+          message: "SINGLE orders cannot contain child strategies",
+        });
+      }
+      if (
+        order.orderStrategyType === "TRIGGER" &&
         order.childOrderStrategies === undefined
       ) {
         context.addIssue({
           code: "custom",
-          message: "Order must contain legs or child strategies",
+          path: ["childOrderStrategies"],
+          message: "TRIGGER orders must contain child strategies",
         });
       }
       if (
+        order.orderType !== undefined &&
         [
           "MARKET",
           "STOP",
@@ -331,6 +383,7 @@ export const orderSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
         });
       }
       if (
+        order.orderType !== undefined &&
         !["STOP", "STOP_LIMIT"].includes(order.orderType) &&
         order.stopPrice !== undefined
       ) {
@@ -341,6 +394,7 @@ export const orderSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
         });
       }
       if (
+        order.orderType !== undefined &&
         [
           "LIMIT",
           "STOP_LIMIT",
@@ -357,6 +411,7 @@ export const orderSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
         });
       }
       if (
+        order.orderType !== undefined &&
         ["STOP", "STOP_LIMIT"].includes(order.orderType) &&
         order.stopPrice === undefined
       ) {
@@ -366,7 +421,10 @@ export const orderSchema: z.ZodType<Record<string, unknown>> = z.lazy(() =>
           message: `stopPrice is required for ${order.orderType} orders`,
         });
       }
-      if (["TRAILING_STOP", "TRAILING_STOP_LIMIT"].includes(order.orderType)) {
+      if (
+        order.orderType !== undefined &&
+        ["TRAILING_STOP", "TRAILING_STOP_LIMIT"].includes(order.orderType)
+      ) {
         for (const field of [
           "stopPriceLinkBasis",
           "stopPriceLinkType",
@@ -443,6 +501,10 @@ export function createSchwabMcpServer(
               outputMode,
               outputCursor,
               outputLimit,
+              cursorScope: await pageCursorScope("schwab_list_accounts", {
+                includePositions,
+                accountHashes: [...session.accountHashes].sort(),
+              }),
             })
           : redacted,
       );
@@ -482,6 +544,10 @@ export function createSchwabMcpServer(
               outputMode,
               outputCursor,
               outputLimit,
+              cursorScope: await pageCursorScope("schwab_get_account", {
+                accountHash,
+                includePositions,
+              }),
             })
           : redacted,
       );
@@ -529,6 +595,11 @@ export function createSchwabMcpServer(
           outputMode,
           outputCursor,
           outputLimit,
+          cursorScope: await pageCursorScope("schwab_get_quotes", {
+            symbols,
+            fields,
+            indicative,
+          }),
         }),
       );
     },
@@ -569,12 +640,13 @@ export function createSchwabMcpServer(
     },
     async ({ symbol, outputMode, outputCursor, outputLimit, ...query }) => {
       const session = await vault.accessSession();
+      const upstreamQuery = normalizePriceHistoryDates({ symbol, ...query });
       const data = await schwabRequest<unknown>(
         env,
         session.accessToken,
         "/marketdata/v1/pricehistory",
         {
-          query: normalizePriceHistoryDates({ symbol, ...query }),
+          query: upstreamQuery,
         },
       );
       return result(
@@ -582,6 +654,10 @@ export function createSchwabMcpServer(
           outputMode,
           outputCursor,
           outputLimit,
+          cursorScope: await pageCursorScope(
+            "schwab_get_price_history",
+            upstreamQuery,
+          ),
         }),
       );
     },
@@ -611,6 +687,7 @@ export function createSchwabMcpServer(
           outputMode,
           contractCursor,
           contractLimit,
+          cursorScope: await pageCursorScope("schwab_get_option_chain", query),
         }),
       );
     },
@@ -747,7 +824,15 @@ export function createSchwabMcpServer(
             "/marketdata/v1/instruments",
             { query: { symbol: search, projection } },
           ),
-          { outputMode, outputCursor, outputLimit },
+          {
+            outputMode,
+            outputCursor,
+            outputLimit,
+            cursorScope: await pageCursorScope("schwab_search_instruments", {
+              search,
+              projection,
+            }),
+          },
         ),
       );
     },
@@ -785,7 +870,15 @@ export function createSchwabMcpServer(
       return result(
         formatAllowedOrdersPage(
           redactAccountNumbers(await getAllowedOrders(env, session, query)),
-          { outputMode, outputCursor, outputLimit },
+          {
+            outputMode,
+            outputCursor,
+            outputLimit,
+            cursorScope: await pageCursorScope("schwab_get_orders", {
+              query,
+              accountHashes: [...session.accountHashes].sort(),
+            }),
+          },
         ),
       );
     },
@@ -797,7 +890,7 @@ export function createSchwabMcpServer(
       description: "Get a specific Schwab order.",
       inputSchema: z.object({
         accountHash: accountHashSchema,
-        orderId: z.string().min(1).max(64),
+        orderId: schwabIdSchema,
       }),
       annotations: { readOnlyHint: true },
     },
@@ -843,6 +936,10 @@ export function createSchwabMcpServer(
           outputMode,
           outputCursor,
           outputLimit,
+          cursorScope: await pageCursorScope("schwab_get_transactions", {
+            accountHash,
+            query,
+          }),
         }),
       );
     },
@@ -855,10 +952,7 @@ export function createSchwabMcpServer(
       inputSchema: z
         .object({
           accountHash: accountHashSchema,
-          transactionId: z.union([
-            z.number().int().positive().safe(),
-            z.string().min(1).max(20).regex(/^\d+$/),
-          ]),
+          transactionId: schwabIdSchema,
         })
         .strict(),
       annotations: { readOnlyHint: true },
@@ -952,7 +1046,7 @@ function registerTradePreparationTools(
       description: "Validate and prepare replacement of an existing order.",
       inputSchema: z.object({
         accountHash: accountHashSchema,
-        orderId: z.string().min(1).max(64),
+        orderId: schwabIdSchema,
         order: orderSchema,
       }),
       annotations: { readOnlyHint: mode === "preview" },
@@ -971,7 +1065,7 @@ function registerTradePreparationTools(
       description: "Prepare cancellation of an existing order.",
       inputSchema: z.object({
         accountHash: accountHashSchema,
-        orderId: z.string().min(1).max(64),
+        orderId: schwabIdSchema,
       }),
       annotations: { readOnlyHint: mode === "preview" },
     },
@@ -1089,6 +1183,10 @@ function validateDateRange(
       message: "Date range must not exceed 366 days; split longer queries",
     });
   }
+}
+
+async function pageCursorScope(tool: string, query: unknown): Promise<string> {
+  return sha256(canonicalJson({ tool, query }));
 }
 
 function result(value: unknown) {

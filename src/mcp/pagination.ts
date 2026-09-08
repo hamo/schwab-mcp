@@ -1,18 +1,13 @@
-import {
-  decodeUtf8,
-  fromBase64Url,
-  toBase64Url,
-  utf8,
-} from "../security/encoding";
+import { decodePageCursor, encodePageCursor } from "./cursor";
 
 export interface OutputPageOptions {
   outputMode: "paged" | "raw";
   outputCursor?: string | undefined;
   outputLimit: number;
+  cursorScope: string;
 }
 
 const MAX_PAGE_ITEMS_JSON_CHARACTERS = 80_000;
-const CURSOR_PREFIX = "v1.";
 
 interface CursorItem {
   key: string;
@@ -207,7 +202,7 @@ function pageResult(
     compareKeys(left.key, right.key),
   );
   const afterKey = options.outputCursor
-    ? decodeCursor(options.outputCursor)
+    ? decodePageCursor(options.outputCursor, options.cursorScope)
     : undefined;
   const start =
     afterKey === undefined
@@ -221,11 +216,16 @@ function pageResult(
     values.length,
   );
   const selected: CursorItem[] = [];
+  let oversizedItem: { key: string; serializedCharacters: number } | undefined;
   let serializedCharacters = 0;
   for (let index = effectiveStart; index < requestedEnd; index += 1) {
     const candidate = values[index];
     if (!candidate) break;
     const size = JSON.stringify(candidate.value)?.length ?? 4;
+    if (selected.length === 0 && size > MAX_PAGE_ITEMS_JSON_CHARACTERS) {
+      oversizedItem = { key: candidate.key, serializedCharacters: size };
+      break;
+    }
     if (
       selected.length > 0 &&
       serializedCharacters + size > MAX_PAGE_ITEMS_JSON_CHARACTERS
@@ -235,19 +235,24 @@ function pageResult(
     selected.push(candidate);
     serializedCharacters += size;
   }
-  const end = effectiveStart + selected.length;
+  const consumed = selected.length + (oversizedItem ? 1 : 0);
+  const end = effectiveStart + consumed;
+  const continuationKey =
+    oversizedItem?.key ?? selected[selected.length - 1]?.key;
   return {
     page: {
       cursor: options.outputCursor ?? null,
       limit: options.outputLimit,
       returned: selected.length,
+      omittedOversized: oversizedItem ? 1 : 0,
       totalItems: values.length,
       nextCursor:
-        end < values.length && selected.length > 0
-          ? encodeCursor(selected[selected.length - 1]!.key)
+        end < values.length && continuationKey !== undefined
+          ? encodePageCursor(options.cursorScope, continuationKey)
           : null,
       fetchedAt: new Date().toISOString(),
     },
+    ...(oversizedItem ? { oversizedItems: [oversizedItem] } : {}),
     [itemKey]: selected.map((item) => item.value),
   };
 }
@@ -295,19 +300,6 @@ function scalarKey(value: unknown, description: string): string {
     return String(value);
   }
   throw new Error(`Schwab returned an invalid ${description}`);
-}
-
-function encodeCursor(key: string): string {
-  return `${CURSOR_PREFIX}${toBase64Url(utf8(key))}`;
-}
-
-function decodeCursor(cursor: string): string {
-  if (!cursor.startsWith(CURSOR_PREFIX)) throw new Error("Invalid page cursor");
-  try {
-    return decodeUtf8(fromBase64Url(cursor.slice(CURSOR_PREFIX.length)));
-  } catch {
-    throw new Error("Invalid page cursor");
-  }
 }
 
 function compareKeys(left: string, right: string): number {

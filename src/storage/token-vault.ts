@@ -12,6 +12,7 @@ import type {
   StoredSchwabSession,
 } from "../schwab/types";
 import type { Env } from "../types";
+import { atomicTakeIf, atomicUpdateIf } from "./atomic-take";
 
 const TOKEN_KEY = "schwab-session";
 const PREPARATION_TTL_MS = 10 * 60 * 1_000;
@@ -176,15 +177,24 @@ export class SchwabTokenVault extends DurableObject<Env> {
   }
 
   private async approvePreparation(id: string): Promise<Response> {
-    const pending = await this.loadPreparation(id);
-    if (!pending || pending.expiresAt <= Date.now()) {
+    const approved = await atomicUpdateIf<ReturnTypeShape>(
+      this.ctx.storage,
+      this.preparationKey(id),
+      async (encrypted) => {
+        const pending = await decryptJson<PendingTrade>(
+          encrypted,
+          this.env.TOKEN_ENCRYPTION_KEY,
+        );
+        if (pending.expiresAt <= Date.now()) return undefined;
+        return encryptJson(
+          { ...pending, approvedAt: Date.now() },
+          this.env.TOKEN_ENCRYPTION_KEY,
+        );
+      },
+    );
+    if (!approved) {
       return Response.json({ error: "preparation_not_found" }, { status: 404 });
     }
-    const approved: PendingTrade = { ...pending, approvedAt: Date.now() };
-    await this.ctx.storage.put(
-      this.preparationKey(id),
-      await encryptJson(approved, this.env.TOKEN_ENCRYPTION_KEY),
-    );
     return Response.json({ approved: true });
   }
 
@@ -193,20 +203,37 @@ export class SchwabTokenVault extends DurableObject<Env> {
     request: Request,
   ): Promise<Response> {
     const input = await readJson(request);
-    const pending = await this.loadPreparation(id);
-    if (
-      !pending ||
-      pending.expiresAt <= Date.now() ||
-      pending.approvedAt === undefined ||
-      !isRecord(input) ||
-      input.digest !== pending.digest
-    ) {
+    if (!isRecord(input) || typeof input.digest !== "string") {
       return Response.json(
         { error: "preparation_not_approved" },
         { status: 409 },
       );
     }
-    await this.ctx.storage.delete(this.preparationKey(id));
+    const encrypted = await atomicTakeIf<ReturnTypeShape>(
+      this.ctx.storage,
+      this.preparationKey(id),
+      async (value) => {
+        const pending = await decryptJson<PendingTrade>(
+          value,
+          this.env.TOKEN_ENCRYPTION_KEY,
+        );
+        return (
+          pending.expiresAt > Date.now() &&
+          pending.approvedAt !== undefined &&
+          input.digest === pending.digest
+        );
+      },
+    );
+    if (!encrypted) {
+      return Response.json(
+        { error: "preparation_not_approved" },
+        { status: 409 },
+      );
+    }
+    const pending = await decryptJson<PendingTrade>(
+      encrypted,
+      this.env.TOKEN_ENCRYPTION_KEY,
+    );
     return Response.json(pending.action);
   }
 

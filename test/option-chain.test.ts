@@ -41,6 +41,7 @@ describe("Schwab option-chain output", () => {
       formatOptionChainResponse(response, {
         outputMode: "paged",
         contractLimit: 1,
+        cursorScope: "options-spy",
       }),
     ).toMatchObject({
       source: "schwab",
@@ -64,6 +65,7 @@ describe("Schwab option-chain output", () => {
       formatOptionChainResponse(response, {
         outputMode: "raw",
         contractLimit: 25,
+        cursorScope: "options-spy",
       }),
     ).toBe(response);
   });
@@ -75,6 +77,7 @@ describe("Schwab option-chain output", () => {
       formatOptionChainResponse(withoutSymbol, {
         outputMode: "paged",
         contractLimit: 25,
+        cursorScope: "options-spy",
       }),
     ).not.toThrow();
   });
@@ -92,7 +95,11 @@ describe("Schwab option-chain output", () => {
             },
           },
         },
-        { outputMode: "paged", contractLimit: 25 },
+        {
+          outputMode: "paged",
+          contractLimit: 25,
+          cursorScope: "options-spy",
+        },
       ),
     ).toThrow();
   });
@@ -101,16 +108,34 @@ describe("Schwab option-chain output", () => {
     const first = formatOptionChainResponse(response, {
       outputMode: "paged",
       contractLimit: 1,
+      cursorScope: "options-spy",
     }) as { page: { nextCursor: string } };
     expect(
       formatOptionChainResponse(response, {
         outputMode: "paged",
         contractCursor: first.page.nextCursor,
         contractLimit: 1,
+        cursorScope: "options-spy",
       }),
     ).toMatchObject({
       contracts: [{ contractType: "PUT" }],
       page: { nextCursor: null },
     });
+  });
+
+  it("rejects a cursor from another option query", () => {
+    const first = formatOptionChainResponse(response, {
+      outputMode: "paged",
+      contractLimit: 1,
+      cursorScope: "options-spy",
+    }) as { page: { nextCursor: string } };
+    expect(() =>
+      formatOptionChainResponse(response, {
+        outputMode: "paged",
+        contractCursor: first.page.nextCursor,
+        contractLimit: 1,
+        cursorScope: "options-qqq",
+      }),
+    ).toThrow("does not match");
   });
 });

@@ -28,7 +28,7 @@ OAuth dynamic client registration is disabled. Client ID Metadata Documents are 
 
 ## Trading
 
-`TRADING_MODE=disabled` is the safe default and omits Schwab write tools from MCP discovery. `preview` exposes preparation only. `live` additionally requires the granted `mcp:trade` OAuth scope and a separate, expiring browser approval for the complete exact action digest before execution. Actions too large to display in full are rejected.
+`TRADING_MODE=disabled` is the safe default and omits Schwab write tools from MCP discovery. `preview` exposes preparation only. `live` additionally requires the granted `mcp:trade` OAuth scope and a separate, expiring browser approval for the complete exact action digest before execution. Approval and execution transitions are atomic, and an approved action can be consumed only once. Actions too large to display in full are rejected.
 
 Approval prevents an MCP client from silently executing a newly prepared action, but it does not verify that an order is financially suitable. A network interruption during order submission can leave the outcome uncertain. Inspect Schwab's order history before retrying.
 

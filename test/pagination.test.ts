@@ -11,6 +11,7 @@ import {
 const firstPage = {
   outputMode: "paged" as const,
   outputLimit: 1,
+  cursorScope: "test-scope",
 };
 
 describe("bounded MCP output pages", () => {
@@ -72,12 +73,53 @@ describe("bounded MCP output pages", () => {
           { activityId: 3, value: "tail" },
         ],
         "transactions",
-        { outputMode: "paged", outputLimit: 3 },
+        { ...firstPage, outputLimit: 3 },
       ),
     ).toMatchObject({
       page: { returned: 1, totalItems: 3 },
       transactions: [{ activityId: 1, large }],
     });
+  });
+
+  it("rejects a cursor issued for a different query", () => {
+    const first = formatRecordPage(
+      { AAPL: { bid: 1 }, MSFT: { bid: 2 } },
+      "quotes",
+      firstPage,
+    );
+    expect(() =>
+      formatRecordPage({ MSFT: { bid: 2 } }, "quotes", {
+        ...firstPage,
+        cursorScope: "different-query",
+        outputCursor: nextCursor(first),
+      }),
+    ).toThrow("does not match");
+  });
+
+  it("reports and advances past a single oversized item", () => {
+    const page = formatArrayPage(
+      [
+        { activityId: 1, large: "x".repeat(130_000) },
+        { activityId: 2, value: "tail" },
+      ],
+      "transactions",
+      { ...firstPage, outputLimit: 2 },
+    );
+    expect(page).toMatchObject({
+      page: { returned: 0, omittedOversized: 1, totalItems: 2 },
+      oversizedItems: [{ key: "1", serializedCharacters: 130_027 }],
+      transactions: [],
+    });
+    expect(
+      formatArrayPage(
+        [
+          { activityId: 1, large: "x".repeat(130_000) },
+          { activityId: 2, value: "tail" },
+        ],
+        "transactions",
+        { ...firstPage, outputCursor: nextCursor(page) },
+      ),
+    ).toMatchObject({ transactions: [{ activityId: 2, value: "tail" }] });
   });
 
   it("pages candles while retaining price-history metadata", () => {

@@ -1,10 +1,5 @@
 import { z } from "zod";
-import {
-  decodeUtf8,
-  fromBase64Url,
-  toBase64Url,
-  utf8,
-} from "../security/encoding";
+import { decodePageCursor, encodePageCursor } from "./cursor";
 
 export const MAX_OPTION_CHAIN_RESPONSE_BYTES = 8 * 1_024 * 1_024;
 
@@ -44,6 +39,7 @@ export interface OptionChainPageOptions {
   outputMode: "paged" | "raw";
   contractCursor?: string | undefined;
   contractLimit: number;
+  cursorScope: string;
 }
 
 export function formatOptionChainResponse(
@@ -58,7 +54,7 @@ export function formatOptionChainResponse(
     ...flattenContracts("PUT", chain.putExpDateMap),
   ].sort(compareContracts);
   const afterKey = options.contractCursor
-    ? decodeCursor(options.contractCursor)
+    ? decodePageCursor(options.contractCursor, options.cursorScope)
     : undefined;
   const start =
     afterKey === undefined
@@ -86,7 +82,10 @@ export function formatOptionChainResponse(
       totalContracts: contracts.length,
       nextCursor:
         end < contracts.length && selected.length > 0
-          ? encodeCursor(contractKey(selected[selected.length - 1]!))
+          ? encodePageCursor(
+              options.cursorScope,
+              contractKey(selected[selected.length - 1]!),
+            )
           : null,
       fetchedAt: new Date().toISOString(),
     },
@@ -132,19 +131,6 @@ function contractKey(value: PagedContract): string {
     value.contractType,
     value.contract.symbol,
   ].join("\u0000");
-}
-
-function encodeCursor(key: string): string {
-  return `v1.${toBase64Url(utf8(key))}`;
-}
-
-function decodeCursor(cursor: string): string {
-  if (!cursor.startsWith("v1.")) throw new Error("Invalid option-chain cursor");
-  try {
-    return decodeUtf8(fromBase64Url(cursor.slice(3)));
-  } catch {
-    throw new Error("Invalid option-chain cursor");
-  }
 }
 
 function compareKeys(left: string, right: string): number {
