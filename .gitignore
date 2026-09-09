@@ -5,6 +5,7 @@ coverage/
 *.log
 
 # Never commit credentials, tokens, or local deployment configuration.
+wrangler.local.jsonc
 .dev.vars
 .dev.vars.*
 !.dev.vars.example

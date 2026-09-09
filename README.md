@@ -85,7 +85,15 @@ These steps work with Cloudflare's free tier, including SQLite-backed Durable Ob
    npx wrangler kv namespace create OAUTH_KV
    ```
 
-   Put the returned namespace ID into `wrangler.jsonc`. Replace `REPLACE_WITH_WORKER_HOSTNAME` with the expected `schwab-mcp-readonly.<your-workers-subdomain>.workers.dev` hostname.
+   Copy the public template to the ignored local deployment configuration:
+
+   ```sh
+   cp wrangler.jsonc wrangler.local.jsonc
+   ```
+
+   Put the returned namespace ID into `wrangler.local.jsonc`. Replace
+   `REPLACE_WITH_WORKER_HOSTNAME` with the deployment's Worker or custom-domain
+   hostname. Keep `wrangler.local.jsonc` private; Git ignores it by default.
 
 3. Create a Cloudflare Access **SaaS application** using generic OIDC.
 
