@@ -11,6 +11,7 @@ describe("authorization pages", () => {
       state: "state",
       csrf: "csrf",
       tradingEnabled: false,
+      accessOrigin: "https://owner.cloudflareaccess.com",
     });
     const html = await response.text();
 
@@ -18,6 +19,9 @@ describe("authorization pages", () => {
     expect(html).not.toContain("\u202e");
     expect(response.headers.get("content-security-policy")).toContain(
       "frame-ancestors 'none'",
+    );
+    expect(response.headers.get("content-security-policy")).toContain(
+      "form-action 'self' https://owner.cloudflareaccess.com",
     );
     expect(response.headers.get("cache-control")).toBe("no-store");
   });

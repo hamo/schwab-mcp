@@ -8,6 +8,7 @@ export function consentPage(input: {
   state: string;
   csrf: string;
   tradingEnabled: boolean;
+  accessOrigin: string;
 }): Response {
   const capabilities = input.tradingEnabled
     ? "Read Schwab account data. Trading tools may appear, but every live order requires a separate browser approval."
@@ -26,7 +27,10 @@ export function consentPage(input: {
         <input type="hidden" name="csrf" value="${escapeHtml(input.csrf)}">
         <button type="submit">Continue</button>
       </form></main>`,
-    { "set-cookie": csrfCookie(input.csrf) },
+    {
+      "set-cookie": csrfCookie(input.csrf),
+      "content-security-policy": contentSecurityPolicy(input.accessOrigin),
+    },
   );
 }
 
@@ -87,6 +91,18 @@ function csrfCookie(value: string): string {
   return `__Host-schwab_mcp_csrf=${value}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`;
 }
 
+function contentSecurityPolicy(formRedirectOrigin?: string): string {
+  let formAction = "'self'";
+  if (formRedirectOrigin !== undefined) {
+    const origin = new URL(formRedirectOrigin);
+    if (origin.protocol !== "https:" || origin.origin !== formRedirectOrigin) {
+      throw new Error("Form redirect origin must be an HTTPS origin");
+    }
+    formAction += ` ${origin.origin}`;
+  }
+  return `default-src 'none'; style-src 'unsafe-inline'; form-action ${formAction}; frame-ancestors 'none'; base-uri 'none'`;
+}
+
 function htmlPage(
   title: string,
   body: string,
@@ -103,8 +119,7 @@ function htmlPage(
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
-      "content-security-policy":
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+      "content-security-policy": contentSecurityPolicy(),
       "referrer-policy": "no-referrer",
       "x-content-type-options": "nosniff",
       ...extraHeaders,

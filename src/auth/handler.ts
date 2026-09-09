@@ -3,7 +3,7 @@ import {
   type AuthRequest,
   type ClientInfo,
 } from "@cloudflare/workers-oauth-provider";
-import { getTradingMode } from "../config";
+import { accessBaseUrl, getTradingMode } from "../config";
 import { sha256 } from "../security/crypto";
 import {
   buildSchwabAuthorizationUrl,
@@ -26,11 +26,12 @@ import {
   successPage,
   tradeApprovalPage,
 } from "./pages";
+import { withAuthorizationErrorBoundary } from "./error-boundary";
 import { consumeState, createState, FlowError } from "./state";
 
 export const defaultHandler: ExportedHandler<OAuthEnv> = {
-  async fetch(request, env): Promise<Response> {
-    try {
+  fetch(request, env): Promise<Response> {
+    return withAuthorizationErrorBoundary(async () => {
       const url = new URL(request.url);
       if (request.method === "GET" && url.pathname === "/") {
         return Response.json({ name: "schwab-mcp", endpoint: "/mcp" });
@@ -45,17 +46,7 @@ export const defaultHandler: ExportedHandler<OAuthEnv> = {
       if (url.pathname === "/trade/approve")
         return handleTradeApproval(request, env);
       return new Response("Not found", { status: 404 });
-    } catch (error) {
-      if (error instanceof FlowError) return errorPage(error.message);
-      console.error(
-        "Authorization flow failed",
-        error instanceof Error ? error.name : "unknown",
-      );
-      return errorPage(
-        "The authorization request could not be completed.",
-        500,
-      );
-    }
+    });
   },
 };
 
@@ -87,6 +78,7 @@ async function handleAuthorize(
       state,
       csrf,
       tradingEnabled: getTradingMode(env) === "live",
+      accessOrigin: accessBaseUrl(env).origin,
     });
   }
   if (request.method === "POST") {
