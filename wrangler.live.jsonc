@@ -3,8 +3,11 @@
   "name": "schwab-mcp-live",
   "main": "src/index.ts",
   "compatibility_date": "2026-09-01",
-  "compatibility_flags": ["global_fetch_strictly_public"],
-  "workers_dev": true,
+  "compatibility_flags": [
+    "global_fetch_strictly_public",
+    "disallow_importable_env",
+  ],
+  "workers_dev": false,
   "vars": {
     "MCP_RESOURCE_URL": "https://REPLACE_WITH_LIVE_WORKER_HOSTNAME/mcp",
     "TRADING_MODE": "live",

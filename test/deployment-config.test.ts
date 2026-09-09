@@ -6,6 +6,7 @@ import readonlySource from "../wrangler.jsonc?raw";
 interface DeploymentConfig {
   name: string;
   compatibility_flags?: string[];
+  workers_dev?: boolean;
   vars: { TRADING_MODE: string };
   observability?: { redact_query_string?: boolean };
 }
@@ -25,6 +26,8 @@ describe("deployment configuration security", () => {
       expect(config.compatibility_flags).toContain(
         "global_fetch_strictly_public",
       );
+      expect(config.compatibility_flags).toContain("disallow_importable_env");
+      expect(config.workers_dev).toBe(false);
       expect(config.observability?.redact_query_string).toBe(true);
     },
   );
