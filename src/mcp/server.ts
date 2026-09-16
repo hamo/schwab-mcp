@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
+import { createState, STATE_TTL_SECONDS } from "../auth/state";
 import { getTradingMode } from "../config";
 import { canonicalJson, sha256 } from "../security/crypto";
 import {
@@ -458,6 +459,30 @@ export function createSchwabMcpServer(
       annotations: { readOnlyHint: true },
     },
     async () => result({ ...(await vault.status()), tradingMode: mode }),
+  );
+
+  server.registerTool(
+    "schwab_reauthorize",
+    {
+      description:
+        "Create a one-time owner-only URL to reconnect Schwab when its refresh token expires.",
+      annotations: { readOnlyHint: false, idempotentHint: false },
+    },
+    async () => {
+      const state = await createState(
+        vault,
+        { kind: "schwab-reauthorize-start" },
+        env.STATE_SIGNING_KEY,
+      );
+      const url = new URL("/schwab/reauthorize", env.MCP_RESOURCE_URL);
+      url.searchParams.set("state", state);
+      return result({
+        reauthorizationUrl: url.href,
+        expiresInSeconds: STATE_TTL_SECONDS,
+        nextStep:
+          "Open reauthorizationUrl in a browser, complete Cloudflare Access and Schwab login, then retry the Schwab command.",
+      });
+    },
   );
 
   server.registerTool(

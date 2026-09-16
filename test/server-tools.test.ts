@@ -21,6 +21,7 @@ const readTools = [
   "schwab_get_user_preferences",
   "schwab_list_account_hashes",
   "schwab_list_accounts",
+  "schwab_reauthorize",
   "schwab_search_instruments",
 ];
 
@@ -32,9 +33,32 @@ describe("MCP tool registration", () => {
   });
 
   it("adds preparation in preview and gated execution in live mode", () => {
-    expect(toolNames("preview", ["mcp:read"])).toHaveLength(22);
+    expect(toolNames("preview", ["mcp:read"])).toHaveLength(23);
     expect(toolNames("live", ["mcp:read"])).toEqual(readTools);
-    expect(toolNames("live", ["mcp:read", "mcp:trade"])).toHaveLength(23);
+    expect(toolNames("live", ["mcp:read", "mcp:trade"])).toHaveLength(24);
+  });
+
+  it("creates a short-lived reauthorization URL on the configured origin", async () => {
+    const response = (await callTool(
+      createServer("disabled", ["mcp:read"]),
+      "schwab_reauthorize",
+      {},
+    )) as {
+      structuredContent: {
+        result: {
+          reauthorizationUrl: string;
+          expiresInSeconds: number;
+        };
+      };
+    };
+    const url = new URL(response.structuredContent.result.reauthorizationUrl);
+
+    expect(url.origin).toBe("https://worker.example");
+    expect(url.pathname).toBe("/schwab/reauthorize");
+    expect(url.searchParams.get("state")).toMatch(
+      /^[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/u,
+    );
+    expect(response.structuredContent.result.expiresInSeconds).toBe(600);
   });
 
   it("routes every added REST tool to its bounded Schwab endpoint", async () => {
@@ -135,6 +159,8 @@ function createServer(tradingMode: string, scopes: string[]) {
   return createSchwabMcpServer(
     {
       TOKEN_VAULT: namespace,
+      MCP_RESOURCE_URL: "https://worker.example/mcp",
+      STATE_SIGNING_KEY: "state-signing-key",
       TRADING_MODE: tradingMode,
       SCHWAB_ENVIRONMENT: "production",
     } as Env,
@@ -157,8 +183,8 @@ async function callTool(
   server: ReturnType<typeof createSchwabMcpServer>,
   name: string,
   args: Record<string, unknown>,
-): Promise<void> {
+): Promise<unknown> {
   const tool = registeredTools(server)[name];
   if (!tool) throw new Error(`Missing tool ${name}`);
-  await tool.handler(args);
+  return tool.handler(args);
 }

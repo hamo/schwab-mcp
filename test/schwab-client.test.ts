@@ -1,13 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   getAllowedAccounts,
   getAllowedOrders,
+  refreshSchwabToken,
   SchwabApiError,
   schwabRequest,
-  shouldForgetSchwabSession,
+  shouldRequireSchwabReauthorization,
 } from "../src/schwab/client";
 
 describe("Schwab HTTP client", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
   it("only calls the Schwab host and attaches the bearer token", async () => {
     const fetcher = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
@@ -105,22 +108,91 @@ describe("Schwab HTTP client", () => {
     expect(urls).not.toContain("/trader/v1/orders");
   });
 
-  it("forgets a session only when Schwab explicitly rejects its grant", () => {
+  it("requires reauthorization for terminal token responses", () => {
     expect(
-      shouldForgetSchwabSession(
+      shouldRequireSchwabReauthorization(
         new SchwabApiError(400, "failed", "invalid_grant"),
       ),
     ).toBe(true);
     expect(
-      shouldForgetSchwabSession(
+      shouldRequireSchwabReauthorization(
         new SchwabApiError(401, "failed", "invalid_token"),
       ),
     ).toBe(true);
     expect(
-      shouldForgetSchwabSession(new SchwabApiError(503, "unavailable")),
+      shouldRequireSchwabReauthorization(
+        new SchwabApiError(401, "failed", "invalid_client"),
+      ),
+    ).toBe(true);
+    expect(
+      shouldRequireSchwabReauthorization(
+        new SchwabApiError(503, "unavailable"),
+      ),
     ).toBe(false);
-    expect(shouldForgetSchwabSession(new TypeError("network failed"))).toBe(
-      false,
+    expect(
+      shouldRequireSchwabReauthorization(new TypeError("network failed")),
+    ).toBe(false);
+  });
+
+  it("classifies a non-JSON 401 token response as requiring reauthorization", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response("Unauthorized", {
+            status: 401,
+            headers: { "content-type": "text/plain" },
+          }),
+        ),
+      ),
     );
+
+    let thrown: unknown;
+    try {
+      await refreshSchwabToken(
+        {
+          SCHWAB_ENVIRONMENT: "production",
+          SCHWAB_CLIENT_ID: "client",
+          SCHWAB_CLIENT_SECRET: "secret",
+        } as never,
+        "expired-refresh-token",
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(SchwabApiError);
+    expect(shouldRequireSchwabReauthorization(thrown)).toBe(true);
+  });
+
+  it("classifies an oversized 400 token error without reading its body", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          new Response("ignored", {
+            status: 400,
+            headers: { "content-length": String(64 * 1_024 + 1) },
+          }),
+        ),
+      ),
+    );
+
+    let thrown: unknown;
+    try {
+      await refreshSchwabToken(
+        {
+          SCHWAB_ENVIRONMENT: "production",
+          SCHWAB_CLIENT_ID: "client",
+          SCHWAB_CLIENT_SECRET: "secret",
+        } as never,
+        "expired-refresh-token",
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(SchwabApiError);
+    expect(shouldRequireSchwabReauthorization(thrown)).toBe(true);
   });
 });

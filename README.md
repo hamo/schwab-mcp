@@ -44,9 +44,9 @@ Use separate Worker names, KV namespaces, and Schwab applications for read-only,
 
 ## Implemented tools
 
-The disabled/read-only deployment registers 19 tools:
+The disabled/read-only deployment registers 20 tools:
 
-- connection status and allowed account hashes/fingerprints
+- connection status, owner-only Schwab reauthorization, and allowed account hashes/fingerprints
 - accounts, balances, and optional positions
 - bulk and single-symbol quotes, including extended and fundamental fields
 - price history with validated period/frequency combinations
@@ -62,7 +62,9 @@ Cross-account reads are implemented as separate account-scoped Schwab requests f
 
 Large quotes, candles, positions, orders, transactions, instrument searches, and option chains use bounded output pages. Pass each opaque `nextCursor` into the next call until it is `null`; cursor keys are based on stable Schwab identifiers instead of array offsets and are bound to the exact tool and normalized query. A cursor from another query is rejected. Each page is still a fresh Schwab request, so `fetchedAt` and Schwab-provided timestamps identify when values were observed. Records created after a traversal starts may appear on a later page, but inserting them cannot shift the continuation point. An individually oversized record is omitted with its stable key and size in `oversizedItems`, while the cursor advances so later records remain readable. `outputMode=raw` is available for queries already narrowed enough to remain below the MCP response limit.
 
-When enabled, three trading tools prepare place, replace, and cancel actions. The typed order schema supports common equity, mutual-fund, option, multi-leg, trailing-stop, OCO, and trigger fields. Only a live deployment with the `mcp:trade` scope registers `schwab_execute_approved_order`, for a total of 23 tools.
+When enabled, three trading tools prepare place, replace, and cancel actions. The typed order schema supports common equity, mutual-fund, option, multi-leg, trailing-stop, OCO, and trigger fields. Only a live deployment with the `mcp:trade` scope registers `schwab_execute_approved_order`, for a total of 24 tools.
+
+Schwab refresh tokens periodically require an interactive login. When `schwab_connection_status` reports `reauthorizationRequired: true`, call `schwab_reauthorize`, open its ten-minute one-time URL, and complete Cloudflare Access plus Schwab login. The new Schwab session replaces the expired session only after authorization succeeds.
 
 Continuous Schwab Streamer subscriptions are intentionally not included. Cloudflare cannot hibernate a Durable Object that holds an outbound WebSocket, so a persistent market-data connection consumes duration even while idle and can exhaust a free-plan allowance. The sanitized user-preference tool reports whether streaming is available without exposing the connection credentials.
 

@@ -7,6 +7,7 @@ import type { AccessIdentity, Env } from "../types";
 import {
   createState,
   type AccessMcpState,
+  type AccessSchwabReauthorizeState,
   type AccessTradeState,
 } from "./state";
 
@@ -68,6 +69,25 @@ export async function redirectToAccessForTrade(
   const state: AccessTradeState = {
     kind: "access-trade",
     preparationId,
+    codeVerifier: pkce.verifier,
+    nonce: crypto.randomUUID(),
+  };
+  return redirectToAccess(
+    request,
+    env,
+    await createState(new VaultClient(env), state, env.STATE_SIGNING_KEY),
+    state.nonce,
+    pkce.challenge,
+  );
+}
+
+export async function redirectToAccessForSchwabReauthorization(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  const pkce = await createPkce();
+  const state: AccessSchwabReauthorizeState = {
+    kind: "access-schwab-reauthorize",
     codeVerifier: pkce.verifier,
     nonce: crypto.randomUUID(),
   };

@@ -1,5 +1,13 @@
 import { makeFormattingCharactersVisible } from "../security/display";
 
+export type CsrfFlow = "consent" | "trade" | "schwab-reauthorization";
+
+const CSRF_COOKIE_NAMES: Record<CsrfFlow, string> = {
+  consent: "__Host-schwab_mcp_consent_csrf",
+  trade: "__Host-schwab_mcp_trade_csrf",
+  "schwab-reauthorization": "__Host-schwab_mcp_reauth_csrf",
+};
+
 export function consentPage(input: {
   clientName: string;
   clientId: string;
@@ -28,7 +36,7 @@ export function consentPage(input: {
         <button type="submit">Continue</button>
       </form></main>`,
     {
-      "set-cookie": csrfCookie(input.csrf),
+      "set-cookie": csrfCookie("consent", input.csrf),
       "content-security-policy": contentSecurityPolicy(input.accessOrigin),
     },
   );
@@ -54,7 +62,25 @@ export function tradeApprovalPage(input: {
         <button class="danger" type="submit">Approve this exact action</button>
       </form>
       <p>Close this page to deny. Unapproved requests expire automatically.</p></main>`,
-    { "set-cookie": csrfCookie(input.csrf) },
+    { "set-cookie": csrfCookie("trade", input.csrf) },
+  );
+}
+
+export function schwabReauthorizationPage(input: {
+  state: string;
+  csrf: string;
+}): Response {
+  return htmlPage(
+    "Reconnect Schwab",
+    `<main><h1>Reconnect Schwab</h1>
+      <p>Your Schwab authorization will be replaced only after the new login succeeds.</p>
+      <p>You will first sign in through Cloudflare Access. Only the configured owner email is accepted.</p>
+      <form method="post" action="/schwab/reauthorize">
+        <input type="hidden" name="state" value="${escapeHtml(input.state)}">
+        <input type="hidden" name="csrf" value="${escapeHtml(input.csrf)}">
+        <button type="submit">Continue to Schwab</button>
+      </form></main>`,
+    { "set-cookie": csrfCookie("schwab-reauthorization", input.csrf) },
   );
 }
 
@@ -83,12 +109,16 @@ export function readCookie(request: Request, name: string): string | null {
   return null;
 }
 
-export function clearCsrfCookie(): string {
-  return "__Host-schwab_mcp_csrf=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0";
+export function csrfCookieName(flow: CsrfFlow): string {
+  return CSRF_COOKIE_NAMES[flow];
 }
 
-function csrfCookie(value: string): string {
-  return `__Host-schwab_mcp_csrf=${value}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`;
+export function clearCsrfCookie(flow: CsrfFlow): string {
+  return `${csrfCookieName(flow)}=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0`;
+}
+
+function csrfCookie(flow: CsrfFlow, value: string): string {
+  return `${csrfCookieName(flow)}=${value}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=600`;
 }
 
 function contentSecurityPolicy(formRedirectOrigin?: string): string {

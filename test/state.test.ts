@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { consumeState, createState } from "../src/auth/state";
+import { consumeState, createState, verifyStateToken } from "../src/auth/state";
+import { FlowPurposeMismatchError } from "../src/storage/vault-client";
 
 class FakeFlowStore {
   readonly values = new Map<string, { value: unknown; expiresAt: number }>();
@@ -9,12 +10,21 @@ class FakeFlowStore {
     return Promise.resolve();
   }
 
-  consumeFlow(id: string): Promise<unknown> {
+  consumeFlow(id: string, expectedKinds: readonly string[]): Promise<unknown> {
     const stored = this.values.get(id);
+    if (!stored || stored.expiresAt <= Date.now()) {
+      this.values.delete(id);
+      return Promise.resolve(null);
+    }
+    const kind =
+      stored.value && typeof stored.value === "object" && "kind" in stored.value
+        ? (stored.value as { kind?: unknown }).kind
+        : undefined;
+    if (typeof kind !== "string" || !expectedKinds.includes(kind)) {
+      return Promise.reject(new FlowPurposeMismatchError());
+    }
     this.values.delete(id);
-    return Promise.resolve(
-      stored && stored.expiresAt > Date.now() ? stored.value : null,
-    );
+    return Promise.resolve(stored.value);
   }
 }
 
@@ -77,5 +87,37 @@ describe("OAuth flow state", () => {
     expect(
       outcomes.filter((outcome) => outcome.status === "fulfilled"),
     ).toHaveLength(1);
+  });
+
+  it("verifies a browser link without consuming its stored state", async () => {
+    const store = new FakeFlowStore();
+    const token = await createState(
+      store,
+      { kind: "schwab-reauthorize-start" },
+      "state-secret",
+    );
+
+    await expect(verifyStateToken(token, "state-secret")).resolves.toBeTypeOf(
+      "string",
+    );
+    await expect(
+      consumeState(store, token, "schwab-reauthorize-start", "state-secret"),
+    ).resolves.toEqual({ kind: "schwab-reauthorize-start" });
+  });
+
+  it("preserves a state submitted to the wrong purpose", async () => {
+    const store = new FakeFlowStore();
+    const token = await createState(
+      store,
+      { kind: "schwab-reauthorize-start" },
+      "state-secret",
+    );
+
+    await expect(
+      consumeState(store, token, "consent", "state-secret"),
+    ).rejects.toThrow("State purpose mismatch");
+    await expect(
+      consumeState(store, token, "schwab-reauthorize-start", "state-secret"),
+    ).resolves.toEqual({ kind: "schwab-reauthorize-start" });
   });
 });

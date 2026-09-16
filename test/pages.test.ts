@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { consentPage, tradeApprovalPage } from "../src/auth/pages";
+import {
+  clearCsrfCookie,
+  consentPage,
+  csrfCookieName,
+  schwabReauthorizationPage,
+  tradeApprovalPage,
+} from "../src/auth/pages";
 
 describe("authorization pages", () => {
   it("makes invisible client metadata visible and sets browser defenses", async () => {
@@ -41,5 +47,62 @@ describe("authorization pages", () => {
     );
     expect(html).not.toContain("<script>");
     expect(html).not.toContain("\u2066");
+  });
+
+  it("requires a CSRF-protected POST before starting Schwab reauthorization", async () => {
+    const response = schwabReauthorizationPage({
+      state: "signed-state",
+      csrf: "csrf-token",
+    });
+    const html = await response.text();
+
+    expect(html).toContain('method="post"');
+    expect(html).toContain('action="/schwab/reauthorize"');
+    expect(html).toContain('name="state" value="signed-state"');
+    expect(response.headers.get("set-cookie")).toContain("csrf-token");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+  });
+
+  it("isolates CSRF cookies for concurrent browser flows", () => {
+    const consent = consentPage({
+      clientName: "client",
+      clientId: "https://client.example/metadata",
+      redirectUri: "https://client.example/callback",
+      scopes: ["mcp:read"],
+      state: "consent-state",
+      csrf: "consent-csrf",
+      tradingEnabled: false,
+      accessOrigin: "https://owner.cloudflareaccess.com",
+    });
+    const trade = tradeApprovalPage({
+      summary: "order",
+      digest: "digest",
+      state: "trade-state",
+      csrf: "trade-csrf",
+      expiresAt: Date.now() + 60_000,
+    });
+    const reauthorization = schwabReauthorizationPage({
+      state: "reauthorization-state",
+      csrf: "reauthorization-csrf",
+    });
+
+    expect(consent.headers.get("set-cookie")).toContain(
+      `${csrfCookieName("consent")}=consent-csrf`,
+    );
+    expect(trade.headers.get("set-cookie")).toContain(
+      `${csrfCookieName("trade")}=trade-csrf`,
+    );
+    expect(reauthorization.headers.get("set-cookie")).toContain(
+      `${csrfCookieName("schwab-reauthorization")}=reauthorization-csrf`,
+    );
+    expect(
+      new Set([
+        csrfCookieName("consent"),
+        csrfCookieName("trade"),
+        csrfCookieName("schwab-reauthorization"),
+      ]),
+    ).toHaveLength(3);
+    expect(clearCsrfCookie("trade")).toContain(`${csrfCookieName("trade")}=;`);
   });
 });

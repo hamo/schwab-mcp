@@ -3,7 +3,8 @@ import { decryptJson, encryptJson } from "../security/crypto";
 import {
   filterAllowedAccountHashes,
   refreshSchwabToken,
-  shouldForgetSchwabSession,
+  SchwabApiError,
+  shouldRequireSchwabReauthorization,
 } from "../schwab/client";
 import { reviewAction } from "../schwab/order-review";
 import type {
@@ -15,6 +16,7 @@ import type { Env } from "../types";
 import { atomicTakeIf, atomicUpdateIf } from "./atomic-take";
 
 const TOKEN_KEY = "schwab-session";
+const REAUTHORIZATION_REQUIRED_KEY = "schwab-reauthorization-required";
 const PREPARATION_TTL_MS = 10 * 60 * 1_000;
 const MAX_FLOW_TTL_MS = 10 * 60 * 1_000;
 
@@ -22,51 +24,10 @@ export class SchwabTokenVault extends DurableObject<Env> {
   private sessionRefresh: Promise<void> | null = null;
 
   async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
     try {
-      if (request.method === "GET" && url.pathname === "/status")
-        return this.status();
-      if (request.method === "PUT" && url.pathname === "/session")
-        return this.storeSession(request);
-      if (request.method === "DELETE" && url.pathname === "/session")
-        return this.deleteSession();
-      if (request.method === "POST" && url.pathname === "/access")
-        return this.accessSession();
-      if (request.method === "POST" && url.pathname === "/preparations") {
-        return this.createPreparation(request);
-      }
-      if (request.method === "POST" && url.pathname === "/flows") {
-        return this.storeFlow(request);
-      }
-
-      const flowMatch = /^\/flows\/([0-9a-f-]{36})\/consume$/.exec(
-        url.pathname,
-      );
-      if (request.method === "POST" && flowMatch?.[1]) {
-        return this.consumeFlow(flowMatch[1]);
-      }
-
-      const preparationMatch =
-        /^\/preparations\/([0-9a-f-]+)(?:\/(approve|consume))?$/.exec(
-          url.pathname,
-        );
-      if (preparationMatch?.[1]) {
-        const id = preparationMatch[1];
-        if (request.method === "GET" && !preparationMatch[2])
-          return this.getPreparation(id);
-        if (request.method === "POST" && preparationMatch[2] === "approve") {
-          return this.approvePreparation(id);
-        }
-        if (request.method === "POST" && preparationMatch[2] === "consume") {
-          return this.consumePreparation(id, request);
-        }
-      }
-      return Response.json({ error: "not_found" }, { status: 404 });
+      return await this.dispatch(request);
     } catch (error) {
-      console.error(
-        "Token vault operation failed",
-        error instanceof Error ? error.name : "unknown",
-      );
+      console.error("Token vault operation failed", safeErrorMetadata(error));
       return Response.json(
         { error: "vault_operation_failed" },
         { status: 500 },
@@ -74,9 +35,54 @@ export class SchwabTokenVault extends DurableObject<Env> {
     }
   }
 
+  private async dispatch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/status")
+      return this.status();
+    if (request.method === "PUT" && url.pathname === "/session")
+      return this.storeSession(request);
+    if (request.method === "DELETE" && url.pathname === "/session")
+      return this.deleteSession();
+    if (request.method === "POST" && url.pathname === "/access")
+      return this.accessSession();
+    if (request.method === "POST" && url.pathname === "/preparations") {
+      return this.createPreparation(request);
+    }
+    if (request.method === "POST" && url.pathname === "/flows") {
+      return this.storeFlow(request);
+    }
+
+    const flowMatch = /^\/flows\/([0-9a-f-]{36})\/consume$/.exec(url.pathname);
+    if (request.method === "POST" && flowMatch?.[1]) {
+      return this.consumeFlow(flowMatch[1], request);
+    }
+
+    const preparationMatch =
+      /^\/preparations\/([0-9a-f-]+)(?:\/(approve|consume))?$/.exec(
+        url.pathname,
+      );
+    if (preparationMatch?.[1]) {
+      const id = preparationMatch[1];
+      if (request.method === "GET" && !preparationMatch[2])
+        return this.getPreparation(id);
+      if (request.method === "POST" && preparationMatch[2] === "approve") {
+        return this.approvePreparation(id);
+      }
+      if (request.method === "POST" && preparationMatch[2] === "consume") {
+        return this.consumePreparation(id, request);
+      }
+    }
+    return Response.json({ error: "not_found" }, { status: 404 });
+  }
+
   private async status(): Promise<Response> {
+    const [encrypted, reauthorizationRequired] = await Promise.all([
+      this.ctx.storage.get(TOKEN_KEY),
+      this.ctx.storage.get(REAUTHORIZATION_REQUIRED_KEY),
+    ]);
     return Response.json({
-      connected: (await this.ctx.storage.get(TOKEN_KEY)) !== undefined,
+      connected: encrypted !== undefined && reauthorizationRequired !== true,
+      reauthorizationRequired: reauthorizationRequired === true,
     });
   }
 
@@ -84,10 +90,11 @@ export class SchwabTokenVault extends DurableObject<Env> {
     const value = await readJson(request);
     if (!isStoredSession(value))
       return Response.json({ error: "invalid_session" }, { status: 400 });
-    await this.ctx.storage.put(
-      TOKEN_KEY,
-      await encryptJson(value, this.env.TOKEN_ENCRYPTION_KEY),
-    );
+    const encrypted = await encryptJson(value, this.env.TOKEN_ENCRYPTION_KEY);
+    await this.ctx.storage.transaction(async (transaction) => {
+      await transaction.put(TOKEN_KEY, encrypted);
+      await transaction.delete(REAUTHORIZATION_REQUIRED_KEY);
+    });
     return Response.json({
       connected: true,
       accountCount: value.accountHashes.length,
@@ -95,13 +102,22 @@ export class SchwabTokenVault extends DurableObject<Env> {
   }
 
   private async deleteSession(): Promise<Response> {
-    await this.ctx.storage.delete(TOKEN_KEY);
+    await this.ctx.storage.transaction(async (transaction) => {
+      await transaction.delete(TOKEN_KEY);
+      await transaction.delete(REAUTHORIZATION_REQUIRED_KEY);
+    });
     return Response.json({ connected: false });
   }
 
   private async accessSession(): Promise<Response> {
     let session: StoredSchwabSession | null = null;
     for (let attempt = 0; attempt < 3; attempt += 1) {
+      if ((await this.ctx.storage.get(REAUTHORIZATION_REQUIRED_KEY)) === true) {
+        return Response.json(
+          { error: "schwab_reauthorization_required" },
+          { status: 401 },
+        );
+      }
       session = await this.loadSession();
       if (!session) {
         return Response.json(
@@ -142,20 +158,9 @@ export class SchwabTokenVault extends DurableObject<Env> {
     try {
       refreshed = await refreshSchwabToken(this.env, stale.refreshToken);
     } catch (error) {
-      if (shouldForgetSchwabSession(error)) {
-        const removed = await atomicTakeIf<ReturnTypeShape>(
-          this.ctx.storage,
-          TOKEN_KEY,
-          async (encrypted) =>
-            sameSession(
-              await decryptJson<StoredSchwabSession>(
-                encrypted,
-                this.env.TOKEN_ENCRYPTION_KEY,
-              ),
-              stale,
-            ),
-        );
-        if (removed === undefined) return;
+      if (shouldRequireSchwabReauthorization(error)) {
+        await this.markReauthorizationRequiredIfCurrent(stale);
+        return;
       } else {
         const current = await this.loadSession();
         if (!current || !sameSession(current, stale)) return;
@@ -178,6 +183,22 @@ export class SchwabTokenVault extends DurableObject<Env> {
         );
       },
     );
+  }
+
+  private markReauthorizationRequiredIfCurrent(
+    stale: StoredSchwabSession,
+  ): Promise<boolean> {
+    return this.ctx.storage.transaction(async (transaction) => {
+      const encrypted = await transaction.get<ReturnTypeShape>(TOKEN_KEY);
+      if (encrypted === undefined) return false;
+      const current = await decryptJson<StoredSchwabSession>(
+        encrypted,
+        this.env.TOKEN_ENCRYPTION_KEY,
+      );
+      if (!sameSession(current, stale)) return false;
+      await transaction.put(REAUTHORIZATION_REQUIRED_KEY, true);
+      return true;
+    });
   }
 
   private async createPreparation(request: Request): Promise<Response> {
@@ -317,24 +338,35 @@ export class SchwabTokenVault extends DurableObject<Env> {
     return Response.json({ stored: true });
   }
 
-  private async consumeFlow(id: string): Promise<Response> {
-    const key = this.flowKey(id);
-    const encrypted = await this.ctx.storage.transaction(
-      async (transaction) => {
-        const value = await transaction.get<ReturnTypeShape>(key);
-        if (value !== undefined) await transaction.delete(key);
-        return value;
-      },
-    );
-    if (!encrypted) return Response.json(null);
-    const flow = await decryptJson<StoredFlow>(
-      encrypted,
-      this.env.TOKEN_ENCRYPTION_KEY,
-    );
-    if (!isStoredFlow(flow) || flow.expiresAt <= Date.now()) {
-      return Response.json(null);
+  private async consumeFlow(id: string, request: Request): Promise<Response> {
+    const input = await readJson(request);
+    if (!isFlowConsumeInput(input)) {
+      return Response.json({ error: "invalid_flow_consume" }, { status: 400 });
     }
-    return Response.json(flow.value);
+    const key = this.flowKey(id);
+    const outcome = await this.ctx.storage.transaction(async (transaction) => {
+      const encrypted = await transaction.get<ReturnTypeShape>(key);
+      if (encrypted === undefined) return { status: "missing" } as const;
+      const flow = await decryptJson<StoredFlow>(
+        encrypted,
+        this.env.TOKEN_ENCRYPTION_KEY,
+      );
+      if (!isStoredFlow(flow) || flow.expiresAt <= Date.now()) {
+        await transaction.delete(key);
+        return { status: "missing" } as const;
+      }
+      const kind = isRecord(flow.value) ? flow.value.kind : undefined;
+      if (typeof kind !== "string" || !input.expectedKinds.includes(kind)) {
+        return { status: "purpose_mismatch" } as const;
+      }
+      await transaction.delete(key);
+      return { status: "consumed", value: flow.value } as const;
+    });
+    if (outcome.status === "purpose_mismatch") {
+      return Response.json({ error: "flow_purpose_mismatch" }, { status: 409 });
+    }
+    if (outcome.status === "missing") return Response.json(null);
+    return Response.json(outcome.value);
   }
 
   private async loadSession(): Promise<StoredSchwabSession | null> {
@@ -449,6 +481,17 @@ function sameSession(
   );
 }
 
+function safeErrorMetadata(error: unknown): Record<string, string | number> {
+  if (error instanceof SchwabApiError) {
+    return {
+      name: error.name,
+      status: error.status,
+      ...(error.code ? { code: error.code } : {}),
+    };
+  }
+  return { name: error instanceof Error ? error.name : "unknown" };
+}
+
 async function readJson(request: Request): Promise<unknown> {
   return JSON.parse(await request.text()) as unknown;
 }
@@ -457,6 +500,22 @@ function isPreparationInput(value: unknown): value is {
   action: PendingAction;
 } {
   return isRecord(value) && isPendingAction(value.action);
+}
+
+function isFlowConsumeInput(value: unknown): value is {
+  expectedKinds: string[];
+} {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.expectedKinds) &&
+    value.expectedKinds.length > 0 &&
+    value.expectedKinds.length <= 8 &&
+    value.expectedKinds.every(
+      (kind) =>
+        typeof kind === "string" && /^[a-z][a-z0-9-]{0,63}$/u.test(kind),
+    ) &&
+    new Set(value.expectedKinds).size === value.expectedKinds.length
+  );
 }
 
 function isPendingAction(value: unknown): value is PendingAction {

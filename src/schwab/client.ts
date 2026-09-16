@@ -91,10 +91,26 @@ async function requestToken(
       body,
     },
   );
-  const raw = await readJsonWithLimit(response, MAX_TOKEN_BODY);
+  let rawText: string;
+  try {
+    rawText = await readTextWithLimit(response, MAX_TOKEN_BODY);
+  } catch (error) {
+    if (!response.ok) {
+      throw new SchwabApiError(response.status, "Schwab token request failed");
+    }
+    throw error;
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(rawText) as unknown;
+  } catch {
+    raw = undefined;
+  }
   if (!response.ok) {
-    const code =
+    const rawCode =
       isRecord(raw) && typeof raw.error === "string" ? raw.error : undefined;
+    const code =
+      rawCode && /^[A-Za-z0-9_.-]{1,64}$/u.test(rawCode) ? rawCode : undefined;
     throw new SchwabApiError(
       response.status,
       "Schwab token request failed",
@@ -296,11 +312,10 @@ export class SchwabApiError extends Error {
   }
 }
 
-export function shouldForgetSchwabSession(error: unknown): boolean {
+export function shouldRequireSchwabReauthorization(error: unknown): boolean {
   return (
     error instanceof SchwabApiError &&
-    (error.status === 400 || error.status === 401) &&
-    ["invalid_grant", "invalid_token"].includes(error.code ?? "")
+    (error.status === 400 || error.status === 401)
   );
 }
 

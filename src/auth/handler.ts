@@ -15,19 +15,27 @@ import type { AccessIdentity, OAuthEnv } from "../types";
 import {
   exchangeAccessCode,
   redirectToAccessForMcp,
+  redirectToAccessForSchwabReauthorization,
   redirectToAccessForTrade,
   verifyAccessIdentity,
 } from "./access";
 import {
   clearCsrfCookie,
   consentPage,
+  csrfCookieName,
   errorPage,
   readCookie,
+  schwabReauthorizationPage,
   successPage,
   tradeApprovalPage,
 } from "./pages";
 import { withAuthorizationErrorBoundary } from "./error-boundary";
-import { consumeState, createState, FlowError } from "./state";
+import {
+  consumeState,
+  createState,
+  FlowError,
+  verifyStateToken,
+} from "./state";
 
 export const defaultHandler: ExportedHandler<OAuthEnv> = {
   fetch(request, env): Promise<Response> {
@@ -42,6 +50,9 @@ export const defaultHandler: ExportedHandler<OAuthEnv> = {
       }
       if (request.method === "GET" && url.pathname === "/schwab/callback") {
         return handleSchwabCallback(request, env);
+      }
+      if (url.pathname === "/schwab/reauthorize") {
+        return handleSchwabReauthorization(request, env);
       }
       if (url.pathname === "/trade/approve")
         return handleTradeApproval(request, env);
@@ -93,7 +104,7 @@ async function handleAuthorize(
     if (
       !csrf ||
       csrf !== state.csrf ||
-      readCookie(request, "__Host-schwab_mcp_csrf") !== csrf
+      readCookie(request, csrfCookieName("consent")) !== csrf
     ) {
       return errorPage("Invalid or expired consent form");
     }
@@ -106,7 +117,53 @@ async function handleAuthorize(
       status: 302,
       headers: {
         location: response.headers.get("location") ?? "/",
-        "set-cookie": clearCsrfCookie(),
+        "set-cookie": clearCsrfCookie("consent"),
+      },
+    });
+  }
+  return new Response("Method not allowed", {
+    status: 405,
+    headers: { allow: "GET, POST" },
+  });
+}
+
+async function handleSchwabReauthorization(
+  request: Request,
+  env: OAuthEnv,
+): Promise<Response> {
+  if (request.method === "GET") {
+    const state = new URL(request.url).searchParams.get("state");
+    await verifyStateToken(state, env.STATE_SIGNING_KEY);
+    const csrf = crypto.randomUUID();
+    return schwabReauthorizationPage({ state: state!, csrf });
+  }
+  if (request.method === "POST") {
+    const form = await request.formData();
+    const state = stringField(form, "state");
+    const csrf = stringField(form, "csrf");
+    if (
+      !csrf ||
+      csrf !== readCookie(request, csrfCookieName("schwab-reauthorization"))
+    ) {
+      return errorPage("Invalid or expired reauthorization form");
+    }
+    await consumeState(
+      new VaultClient(env),
+      state,
+      "schwab-reauthorize-start",
+      env.STATE_SIGNING_KEY,
+    );
+    const redirect = await redirectToAccessForSchwabReauthorization(
+      request,
+      env,
+    );
+    return new Response(null, {
+      status: 302,
+      headers: {
+        location: redirect.headers.get("location") ?? "/",
+        "set-cookie": clearCsrfCookie("schwab-reauthorization"),
+        "cache-control": "no-store",
+        "referrer-policy": "no-referrer",
       },
     });
   }
@@ -124,7 +181,7 @@ async function handleAccessCallback(
   const state = await consumeState(
     new VaultClient(env),
     rawState,
-    ["access-mcp", "access-trade"] as const,
+    ["access-mcp", "access-trade", "access-schwab-reauthorize"] as const,
     env.STATE_SIGNING_KEY,
   );
   const tokens = await exchangeAccessCode(request, env, state.codeVerifier);
@@ -153,6 +210,18 @@ async function handleAccessCallback(
     });
   }
 
+  if (state.kind === "access-schwab-reauthorize") {
+    const schwabState = await createState(
+      new VaultClient(env),
+      { kind: "schwab-reauthorize", identity },
+      env.STATE_SIGNING_KEY,
+    );
+    return Response.redirect(
+      buildSchwabAuthorizationUrl(request, env, schwabState),
+      302,
+    );
+  }
+
   const vault = new VaultClient(env);
   if ((await vault.status()).connected)
     return completeMcpAuthorization(env, state.oauthRequest, identity);
@@ -175,7 +244,7 @@ async function handleSchwabCallback(
   const state = await consumeState(
     new VaultClient(env),
     new URL(request.url).searchParams.get("state"),
-    "schwab",
+    ["schwab", "schwab-reauthorize"] as const,
     env.STATE_SIGNING_KEY,
   );
   if (state.identity.email !== env.OWNER_EMAIL.trim().toLowerCase()) {
@@ -187,6 +256,12 @@ async function handleSchwabCallback(
     tokens.accessToken,
   );
   await new VaultClient(env).storeSession({ ...tokens, accountHashes });
+  if (state.kind === "schwab-reauthorize") {
+    return successPage(
+      "Schwab reconnected",
+      "Return to ChatGPT and retry the Schwab command.",
+    );
+  }
   return completeMcpAuthorization(env, state.oauthRequest, state.identity);
 }
 
@@ -214,7 +289,7 @@ async function handleTradeApproval(
     );
     if (
       stringField(form, "csrf") !== state.csrf ||
-      readCookie(request, "__Host-schwab_mcp_csrf") !== state.csrf ||
+      readCookie(request, csrfCookieName("trade")) !== state.csrf ||
       state.identity.email !== env.OWNER_EMAIL.trim().toLowerCase()
     ) {
       return errorPage("Trade approval was rejected", 403);
@@ -224,7 +299,7 @@ async function handleTradeApproval(
       "Trade approved",
       "Return to ChatGPT and continue. The approval is one-time and applies only to the displayed action.",
     );
-    response.headers.append("set-cookie", clearCsrfCookie());
+    response.headers.append("set-cookie", clearCsrfCookie("trade"));
     return response;
   }
   return new Response("Method not allowed", {

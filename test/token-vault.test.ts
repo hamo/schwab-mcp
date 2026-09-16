@@ -66,7 +66,10 @@ class FakeStorage implements AtomicStorage, AtomicTransaction {
 }
 
 describe("Schwab token vault refresh concurrency", () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
 
   it("coalesces concurrent refreshes for the same expired session", async () => {
     const { vault } = await createVault(expiredSession("old", 1));
@@ -191,6 +194,104 @@ describe("Schwab token vault refresh concurrency", () => {
     await expectJson(await oldAccess, { accessToken: "new-access" });
     await expectJson(await access(vault), { accessToken: "new-access" });
   });
+
+  it("marks a rejected refresh token as requiring reauthorization", async () => {
+    const { vault } = await createVault(expiredSession("expired", 1));
+    const remoteFetch = vi.fn(() =>
+      Promise.resolve(
+        Response.json(
+          { error: "invalid_client", error_description: "expired" },
+          { status: 401 },
+        ),
+      ),
+    );
+    vi.stubGlobal("fetch", remoteFetch);
+
+    const response = await access(vault);
+    expect(response.status).toBe(401);
+    await expect(response.json()).resolves.toEqual({
+      error: "schwab_reauthorization_required",
+    });
+    await expectJson(await status(vault), {
+      connected: false,
+      reauthorizationRequired: true,
+    });
+    expect(remoteFetch).toHaveBeenCalledTimes(1);
+
+    const retry = await access(vault);
+    expect(retry.status).toBe(401);
+    expect(remoteFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the reauthorization marker only after a new session is stored", async () => {
+    const { vault } = await createVault(expiredSession("expired", 1));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          Response.json({ error: "invalid_grant" }, { status: 400 }),
+        ),
+      ),
+    );
+    expect((await access(vault)).status).toBe(401);
+
+    await store(vault, activeSession("new", 2));
+
+    await expectJson(await status(vault), {
+      connected: true,
+      reauthorizationRequired: false,
+    });
+    await expectJson(await access(vault), { accessToken: "new-access" });
+  });
+
+  it("retains a session after a transient Schwab token endpoint failure", async () => {
+    const { vault } = await createVault(expiredSession("temporary", 1));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          Response.json({ error: "server_error" }, { status: 503 }),
+        ),
+      ),
+    );
+
+    expect((await access(vault)).status).toBe(500);
+    await expectJson(await status(vault), {
+      connected: true,
+      reauthorizationRequired: false,
+    });
+  });
+
+  it("preserves a flow when the expected purpose does not match", async () => {
+    const { vault } = await createVault(activeSession("active", 1));
+    const id = crypto.randomUUID();
+    const stored = await vault.fetch(
+      new Request("https://vault.internal/flows", {
+        method: "POST",
+        body: JSON.stringify({
+          id,
+          value: { kind: "schwab-reauthorize-start" },
+          expiresAt: Date.now() + 60_000,
+        }),
+      }),
+    );
+    expect(stored.status).toBe(200);
+
+    const mismatch = await consumeFlow(vault, id, ["consent"]);
+    expect(mismatch.status).toBe(409);
+    await expect(mismatch.json()).resolves.toEqual({
+      error: "flow_purpose_mismatch",
+    });
+
+    await expectJson(
+      await consumeFlow(vault, id, ["schwab-reauthorize-start"]),
+      { kind: "schwab-reauthorize-start" },
+    );
+    await expect(
+      (await consumeFlow(vault, id, ["schwab-reauthorize-start"])).json(),
+    ).resolves.toBeNull();
+  });
 });
 
 async function createVault(initial: StoredSchwabSession): Promise<{
@@ -231,6 +332,23 @@ function activeSession(prefix: string, issuedAt: number): StoredSchwabSession {
 function access(vault: SchwabTokenVault): Promise<Response> {
   return vault.fetch(
     new Request("https://vault.internal/access", { method: "POST" }),
+  );
+}
+
+function status(vault: SchwabTokenVault): Promise<Response> {
+  return vault.fetch(new Request("https://vault.internal/status"));
+}
+
+function consumeFlow(
+  vault: SchwabTokenVault,
+  id: string,
+  expectedKinds: string[],
+): Promise<Response> {
+  return vault.fetch(
+    new Request(`https://vault.internal/flows/${id}/consume`, {
+      method: "POST",
+      body: JSON.stringify({ expectedKinds }),
+    }),
   );
 }
 
