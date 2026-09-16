@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { getTradingMode } from "../src/config";
+import {
+  getTradingMode,
+  MCP_ACCESS_TOKEN_TTL_SECONDS,
+  MCP_REFRESH_TOKEN_TTL_SECONDS,
+} from "../src/config";
 import { tradeToolPolicy } from "../src/mcp/server";
 
 describe("trading mode fail-closed behavior", () => {
@@ -25,5 +29,12 @@ describe("trading mode fail-closed behavior", () => {
       preparation: true,
       execution: true,
     });
+  });
+});
+
+describe("MCP OAuth lifetime policy", () => {
+  it("keeps access tokens short-lived and refresh grants valid for 30 days", () => {
+    expect(MCP_ACCESS_TOKEN_TTL_SECONDS).toBe(60 * 60);
+    expect(MCP_REFRESH_TOKEN_TTL_SECONDS).toBe(30 * 24 * 60 * 60);
   });
 });

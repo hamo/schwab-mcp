@@ -1,5 +1,8 @@
 import type { Env, TradingMode } from "./types";
 
+export const MCP_ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
+export const MCP_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
+
 export function getTradingMode(env: Pick<Env, "TRADING_MODE">): TradingMode {
   if (env.TRADING_MODE === "preview" || env.TRADING_MODE === "live") {
     return env.TRADING_MODE;

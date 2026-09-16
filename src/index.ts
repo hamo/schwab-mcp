@@ -1,5 +1,10 @@
 import { OAuthProvider } from "@cloudflare/workers-oauth-provider";
-import { requireConfiguration, getTradingMode } from "./config";
+import {
+  getTradingMode,
+  MCP_ACCESS_TOKEN_TTL_SECONDS,
+  MCP_REFRESH_TOKEN_TTL_SECONDS,
+  requireConfiguration,
+} from "./config";
 import { defaultHandler } from "./auth/handler";
 import { McpApiHandler } from "./mcp/handler";
 import { SchwabTokenVault } from "./storage/token-vault";
@@ -21,8 +26,8 @@ function createProvider(env: Env): OAuthProvider<OAuthEnv> {
     tokenEndpoint: "/oauth/token",
     clientIdMetadataDocumentEnabled: true,
     allowPlainPKCE: false,
-    accessTokenTTL: 3_600,
-    refreshTokenTTL: 604_800,
+    accessTokenTTL: MCP_ACCESS_TOKEN_TTL_SECONDS,
+    refreshTokenTTL: MCP_REFRESH_TOKEN_TTL_SECONDS,
     scopesSupported: scopes,
     resourceMetadata: {
       resource,

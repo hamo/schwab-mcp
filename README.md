@@ -22,7 +22,7 @@ Cloudflare Worker ── Cloudflare Access OIDC ── exact owner email
 
 The repository contains no credentials. The Worker checks the configured email after cryptographically verifying the Cloudflare Access ID token, including its signature, issuer, audience, authorized party, nonce, and lifetime. OAuth and approval state is encrypted and atomically consumed in Durable Object storage. Schwab tokens are encrypted with AES-256-GCM before Durable Object storage. Raw account numbers are redacted from MCP responses.
 
-OAuth clients must use a Client ID Metadata Document (CIMD). Anonymous dynamic client registration is intentionally disabled, so arbitrary visitors cannot create persistent OAuth clients in the deployment. The consent page displays the client ID, exact redirect URI, and requested scopes before authentication. MCP access tokens last one hour and refresh tokens last seven days.
+OAuth clients must use a Client ID Metadata Document (CIMD). Anonymous dynamic client registration is intentionally disabled, so arbitrary visitors cannot create persistent OAuth clients in the deployment. The consent page displays the client ID, exact redirect URI, and requested scopes before authentication. MCP access tokens last one hour and refresh tokens last 30 days.
 
 Cloudflare Access must also have an `Allow` policy containing only the owner's exact email. The code-level email check is a second independent guard.
 
