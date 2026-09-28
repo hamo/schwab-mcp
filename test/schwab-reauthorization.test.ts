@@ -77,7 +77,10 @@ class FakeVaultStub {
 }
 
 describe("Schwab browser reauthorization", () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
 
   it("does not consume a prefetched GET and replaces the session only after owner login", async () => {
     const vault = new FakeVaultStub();
@@ -158,7 +161,156 @@ describe("Schwab browser reauthorization", () => {
       accountHashes: ["allowed_hash"],
     });
   });
+
+  it("logs only safe token-exchange diagnostics", async () => {
+    const vault = new FakeVaultStub();
+    const env = createEnv(vault);
+    const state = await createSchwabCallbackState(vault, env);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          Response.json(
+            {
+              error: "invalid_grant",
+              error_description: "sensitive upstream detail",
+            },
+            { status: 400 },
+          ),
+        ),
+      ),
+    );
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const response = await handle(
+      new Request(
+        `https://worker.example/schwab/callback?code=sensitive-authorization-code&state=${encodeURIComponent(state)}`,
+      ),
+      env,
+    );
+
+    expect(response.status).toBe(500);
+    expect(log.mock.calls[0]?.[0]).toEqual({
+      event: "schwab_authorization_failure",
+      stage: "token_exchange",
+      errorType: "schwab_api_error",
+      status: 400,
+      code: "invalid_grant",
+    });
+    const output = JSON.stringify(log.mock.calls);
+    expect(output).not.toContain("sensitive-authorization-code");
+    expect(output).not.toContain("sensitive upstream detail");
+    expect(output).not.toContain(state);
+  });
+
+  it("does not log an unknown token-shaped upstream error value", async () => {
+    const vault = new FakeVaultStub();
+    const env = createEnv(vault);
+    const state = await createSchwabCallbackState(vault, env);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          Response.json(
+            { error: "sensitiveauthorizationcode" },
+            { status: 400 },
+          ),
+        ),
+      ),
+    );
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const response = await handle(
+      new Request(
+        `https://worker.example/schwab/callback?code=another-sensitive-code&state=${encodeURIComponent(state)}`,
+      ),
+      env,
+    );
+
+    expect(response.status).toBe(500);
+    expect(log.mock.calls[0]?.[0]).toEqual({
+      event: "schwab_authorization_failure",
+      stage: "token_exchange",
+      errorType: "schwab_api_error",
+      status: 400,
+    });
+    const output = JSON.stringify(log.mock.calls);
+    expect(output).not.toContain("sensitiveauthorizationcode");
+    expect(output).not.toContain("another-sensitive-code");
+    expect(output).not.toContain(state);
+  });
+
+  it("identifies account discovery without logging Schwab response details", async () => {
+    const vault = new FakeVaultStub();
+    const env = createEnv(vault);
+    const state = await createSchwabCallbackState(vault, env);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((input: RequestInfo | URL) => {
+        const url = new URL(input instanceof Request ? input.url : input);
+        if (url.pathname === "/v1/oauth/token") {
+          return Promise.resolve(
+            Response.json({
+              access_token: "sensitive-access-token",
+              refresh_token: "sensitive-refresh-token",
+              token_type: "Bearer",
+              expires_in: 1_800,
+            }),
+          );
+        }
+        if (url.pathname === "/trader/v1/accounts/accountNumbers") {
+          return Promise.resolve(
+            Response.json(
+              {
+                error: "server_error",
+                message: "sensitive account detail",
+              },
+              { status: 503 },
+            ),
+          );
+        }
+        throw new Error(`Unexpected fetch: ${url.origin}${url.pathname}`);
+      }),
+    );
+    const log = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const response = await handle(
+      new Request(
+        `https://worker.example/schwab/callback?code=sensitive-authorization-code&state=${encodeURIComponent(state)}`,
+      ),
+      env,
+    );
+
+    expect(response.status).toBe(500);
+    expect(log.mock.calls[0]?.[0]).toEqual({
+      event: "schwab_authorization_failure",
+      stage: "account_discovery",
+      errorType: "schwab_api_error",
+      status: 503,
+      code: "server_error",
+    });
+    const output = JSON.stringify(log.mock.calls);
+    expect(output).not.toContain("sensitive-authorization-code");
+    expect(output).not.toContain("sensitive-access-token");
+    expect(output).not.toContain("sensitive-refresh-token");
+    expect(output).not.toContain("sensitive account detail");
+    expect(output).not.toContain(state);
+  });
 });
+
+function createSchwabCallbackState(
+  vault: FakeVaultStub,
+  env: OAuthEnv,
+): Promise<string> {
+  return createState(
+    new VaultClient(env),
+    {
+      kind: "schwab-reauthorize",
+      identity: { email: env.OWNER_EMAIL, subject: "owner-subject" },
+    },
+    env.STATE_SIGNING_KEY,
+  );
+}
 
 function createEnv(vault: FakeVaultStub): OAuthEnv {
   const namespace = {

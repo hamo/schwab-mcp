@@ -8,7 +8,9 @@ import { sha256 } from "../security/crypto";
 import {
   buildSchwabAuthorizationUrl,
   exchangeSchwabCode,
+  safeSchwabErrorCode,
   selectAllowedAccountHashes,
+  SchwabApiError,
 } from "../schwab/client";
 import { VaultClient } from "../storage/vault-client";
 import type { AccessIdentity, OAuthEnv } from "../types";
@@ -250,11 +252,20 @@ async function handleSchwabCallback(
   if (state.identity.email !== env.OWNER_EMAIL.trim().toLowerCase()) {
     return errorPage("Owner identity mismatch", 403);
   }
-  const tokens = await exchangeSchwabCode(request, env);
-  const accountHashes = await selectAllowedAccountHashes(
-    env,
-    tokens.accessToken,
-  );
+  let tokens;
+  try {
+    tokens = await exchangeSchwabCode(request, env);
+  } catch (error) {
+    logSchwabAuthorizationFailure("token_exchange", error);
+    throw error;
+  }
+  let accountHashes;
+  try {
+    accountHashes = await selectAllowedAccountHashes(env, tokens.accessToken);
+  } catch (error) {
+    logSchwabAuthorizationFailure("account_discovery", error);
+    throw error;
+  }
   await new VaultClient(env).storeSession({ ...tokens, accountHashes });
   if (state.kind === "schwab-reauthorize") {
     return successPage(
@@ -263,6 +274,34 @@ async function handleSchwabCallback(
     );
   }
   return completeMcpAuthorization(env, state.oauthRequest, state.identity);
+}
+
+type SchwabAuthorizationStage = "token_exchange" | "account_discovery";
+
+function logSchwabAuthorizationFailure(
+  stage: SchwabAuthorizationStage,
+  error: unknown,
+): void {
+  const metadata: Record<string, string | number> = {
+    event: "schwab_authorization_failure",
+    stage,
+    errorType:
+      error instanceof SchwabApiError ? "schwab_api_error" : "unexpected_error",
+  };
+  if (
+    error instanceof SchwabApiError &&
+    Number.isInteger(error.status) &&
+    error.status >= 100 &&
+    error.status <= 599
+  ) {
+    metadata.status = error.status;
+  }
+  const code =
+    error instanceof SchwabApiError
+      ? safeSchwabErrorCode(error.code)
+      : undefined;
+  if (code) metadata.code = code;
+  console.error(metadata);
 }
 
 async function handleTradeApproval(

@@ -3,6 +3,7 @@ import {
   getAllowedAccounts,
   getAllowedOrders,
   refreshSchwabToken,
+  safeSchwabErrorCode,
   SchwabApiError,
   schwabRequest,
   shouldRequireSchwabReauthorization,
@@ -132,6 +133,13 @@ describe("Schwab HTTP client", () => {
     expect(
       shouldRequireSchwabReauthorization(new TypeError("network failed")),
     ).toBe(false);
+  });
+
+  it("only permits explicitly allowlisted error codes in logs", () => {
+    expect(safeSchwabErrorCode("invalid_grant")).toBe("invalid_grant");
+    expect(safeSchwabErrorCode("server_error")).toBe("server_error");
+    expect(safeSchwabErrorCode("sensitiveauthorizationcode")).toBeUndefined();
+    expect(safeSchwabErrorCode("12345678901234567890")).toBeUndefined();
   });
 
   it("classifies a non-JSON 401 token response as requiring reauthorization", async () => {

@@ -14,6 +14,20 @@ const MAX_ERROR_BODY = 2_000;
 const MAX_TOKEN_BODY = 64 * 1_024;
 const MAX_API_BODY = 2 * 1_024 * 1_024;
 const MAX_EXTENDED_API_BODY = 8 * 1_024 * 1_024;
+const SAFE_SCHWAB_ERROR_CODES = new Set([
+  "access_denied",
+  "insufficient_scope",
+  "invalid_client",
+  "invalid_grant",
+  "invalid_request",
+  "invalid_scope",
+  "invalid_token",
+  "server_error",
+  "temporarily_unavailable",
+  "unauthorized_client",
+  "unsupported_grant_type",
+  "unsupported_response_type",
+]);
 
 export interface SchwabRequestOptions {
   method?: "GET" | "POST" | "PUT" | "DELETE";
@@ -107,10 +121,7 @@ async function requestToken(
     raw = undefined;
   }
   if (!response.ok) {
-    const rawCode =
-      isRecord(raw) && typeof raw.error === "string" ? raw.error : undefined;
-    const code =
-      rawCode && /^[A-Za-z0-9_.-]{1,64}$/u.test(rawCode) ? rawCode : undefined;
+    const code = isRecord(raw) ? safeSchwabErrorCode(raw.error) : undefined;
     throw new SchwabApiError(
       response.status,
       "Schwab token request failed",
@@ -190,7 +201,11 @@ export async function schwabRequest<T>(
   );
   if (!response.ok) {
     const detail = await readTextWithLimit(response, MAX_ERROR_BODY);
-    throw new SchwabApiError(response.status, safeErrorDetail(detail));
+    throw new SchwabApiError(
+      response.status,
+      safeErrorDetail(detail),
+      safeErrorCode(detail),
+    );
   }
   if (
     response.status === 204 ||
@@ -312,6 +327,12 @@ export class SchwabApiError extends Error {
   }
 }
 
+export function safeSchwabErrorCode(value: unknown): string | undefined {
+  return typeof value === "string" && SAFE_SCHWAB_ERROR_CODES.has(value)
+    ? value
+    : undefined;
+}
+
 export function shouldRequireSchwabReauthorization(error: unknown): boolean {
   return (
     error instanceof SchwabApiError &&
@@ -329,6 +350,15 @@ function safeErrorDetail(raw: string): string {
       : "Schwab API request failed";
   } catch {
     return "Schwab API request failed";
+  }
+}
+
+function safeErrorCode(raw: string): string | undefined {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return isRecord(parsed) ? safeSchwabErrorCode(parsed.error) : undefined;
+  } catch {
+    return undefined;
   }
 }
 
